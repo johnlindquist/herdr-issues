@@ -92,7 +92,8 @@ export function issueText(g, why = null) {
   if (g.members.length > 1) lines.push(`Reported ${g.members.length} times: ${g.members.map((m) => m.id).join(", ")}`);
   if (why) lines.push(`Why it's pressing (Triage): ${why}`);
   if (i.labels.length) lines.push(`Labels: ${i.labels.join(", ")}`);
-  if (i.author) lines.push(`From: ${i.author}`);
+  const authors = [...new Set(g.members.map((m) => m.author).filter(Boolean))];
+  if (authors.length) lines.push(`From: ${authors.join(", ")}`);
   if (i.created_at) lines.push(`First reported: ${g.members.map((m) => m.created_at).filter(Boolean).sort()[0]}`);
   lines.push(`Source: ${i.url ?? i.where}`);
   if (i.body) lines.push("", i.body);
