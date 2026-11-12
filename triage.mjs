@@ -233,13 +233,13 @@ async function act(cfg, id, action, args) {
 async function explain(cfg, id) {
   const { g, why, doc } = await findGroup(cfg, id);
   const rank = (doc.summary?.pressing ?? []).findIndex((p) => p.ids.includes(g.id));
-  const prompt = `Explain this issue from the project's tracker and why Triage ranked it ${rank >= 0 ? `#${rank + 1} of the most pressing` : "as not pressing"}. Read the code it touches; don't change anything.\n\n${issueText(g, why)}`;
+  const prompt = `Explain this issue from the project's tracker and why Issues ranked it ${rank >= 0 ? `#${rank + 1} of the most pressing` : "as not pressing"}. Read the code it touches; don't change anything.\n\n${issueText(g, why)}`;
   return { id: g.id, ids: g.members.map((m) => m.id), pressing_rank: rank >= 0 ? rank + 1 : null, why, text: issueText(g, why), hash: g.hash, prompt, argv: ["pi", "--name", `Explain ${g.id}`, prompt] };
 }
 
 const DESCRIBE = {
-  name: "herdr-triage",
-  what: "Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, send it to Main, start a new Main for it, hand it to the Fixer, open its source, dismiss it.",
+  name: "Issues (herdr-triage)",
+  what: "The Issues widget. Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, send it to Main, start a new Main for it, hand it to the Fixer, open its source, dismiss it.",
   commands: {
     show: "show --root <project>: the last refresh, no model call. state: ready | empty | missing (never refreshed) | stale (older than 30 min) | failed (model failed; last summary kept) | unavailable (no source could be read); busy: a refresh is running",
     refresh: "refresh --root <project> [--force]: read the sources; ask the model only when an issue changed (content hash), sending changed issues in full and unchanged ones as titles",

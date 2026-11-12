@@ -1,7 +1,11 @@
-# Triage — context
+# Issues — context
 
-A Herdr app sidebar (a mod, written with gpui-kit like herdr-todos) that shows the few most
-pressing incoming issues for the project in the shown space and lets you act on one.
+**Issues** is the widget's name: everything a person sees says Issues. A Herdr app sidebar (a mod,
+written with gpui-kit like herdr-todos) that shows the few most pressing incoming issues for the
+project in the shown space and lets you act on one. Internal ids stay `triage` (mod folder
+`mods/triage`, menu `mods/triage-menu`, command prefix `triage.`, helper `triage.mjs`, repo
+`herdr-triage`): renaming them would orphan the `{"mod": "triage"}` block already in John's layout.
+"Triage" is the verb for what the model does.
 
 ## Words
 
@@ -16,7 +20,7 @@ pressing incoming issues for the project in the shown space and lets you act on 
   tickets, feedback not rated good) + `tracker/board.json` (cards not done); `github` = open issues
   via `gh issue list`. Picked by `config` / `TRIAGE_SOURCE`; default local when the project ships
   them. `src/sources.mjs`.
-- **Triage** (the judgement): a small model (default `anthropic/claude-haiku-4-5` through `pi -p`,
+- **Triage** (the judgement, a verb): a small model (default `anthropic/claude-haiku-4-5` through `pi -p`,
   no tools) reads the groups and returns at most 5 **pressing** items, each with ids (it may merge
   groups that say the same thing in other words), a short title and a one-line **why**.
   `src/triage.mjs`.
@@ -45,13 +49,31 @@ pressing incoming issues for the project in the shown space and lets you act on 
 - Triage's own files: `src/store.mjs` (`~/.cache/herdr-triage/<app>/projects/<root>/`). It never
   writes into the project, and never creates, edits, closes or comments on an issue.
 
+## Keyboard and navigation (shared with Todos and Memories)
+
+One file, `nav.js`, holds the rules; the same file is copied into herdr-todos (`nav.js`,
+`memories/nav.js`) and `test/nav.test.mjs` fails if the copies differ.
+
+- `⌘I` (keys.json `"global": {"cmd-i": "triage.focus"}`): Issues takes the keyboard, expands if
+  collapsed, selects the last-selected (else first) issue. `Esc` gives the keyboard back to the
+  pane that had it, else the space's Main.
+- `↑/↓` (`k/j`), `Home/End`, `PgUp/PgDn` move inside one widget and stop at its ends.
+  `Tab`/`Shift+Tab` move to the widget below/above (`pane.go`). `−` or a header click collapses.
+- Collapsed: one header line ("Issues · 5 pressing"), saved in the mod's localStorage, and the
+  block is resized to 36 px when it shares a column, so the others get the height
+  (`layout.resize`; the expanded size is restored).
+- Lists window themselves (`keepInView`, `wheelTop`): Herdr's virtual lists forbid handlers in
+  rows and plain scroll areas can't be scrolled from code. Rows have fixed heights; long text is
+  clipped and the full text is the row's tooltip.
+- Every control has a tooltip "Action (Key)"; disabled actions say why.
+
 ## Interfaces
 
 - Agents: `node triage.mjs describe | show | refresh | act <id> <action> | explain <id> | config`
   (`--root <project>`). JSON out; errors `{error:{code,message}}` on stderr, exit 1.
-- People: the sidebar (`main.js`), right-click menu (`menu/`).
+- People: the sidebar (`main.js`), right-click menu (`menu/`), keys above.
 - Model seam: `TRIAGE_MODEL_CMD` (JSON argv; gets `{model, system, input}`), used by the tests.
 
 ## Fence
 
-`npm run check` (= `fence.sh`): `tsc` on the UI and the Node helper, `node --check`, `node --test`.
+`npm run check` (= `fence.sh`): `tsc` on the UI, `nav.js` and the Node helper, `node --check`, `node --test`.

@@ -37,15 +37,15 @@ export function availability(action, g, targets = {}) {
 
 /** The prompt Main receives. */
 export const mainPrompt = (g, why) =>
-  `Triage passed you this issue.\n\n${issueText(g, why)}\n\nFind the cause before changing anything, and tell me what you found and what you'd change. Ask before touching money.`;
+  `The Issues widget passed you this issue.\n\n${issueText(g, why)}\n\nFind the cause before changing anything, and tell me what you found and what you'd change. Ask before touching money.`;
 
 /** The prompt the Fixer receives: the same issue, its job stated. */
 export const fixerPrompt = (g, why) =>
-  `Triage handed you this issue to fix.\n\n${issueText(g, why)}\n\nReproduce it first, fix the cause, and report the change with the check that proves it. Ask before touching money.`;
+  `The Issues widget handed you this issue to fix.\n\n${issueText(g, why)}\n\nReproduce it first, fix the cause, and report the change with the check that proves it. Ask before touching money.`;
 
 /** The Herdr command that starts a new Main (space) for the issue; the sidebar runs it, `act --apply` runs it via herdr-app. */
 export function newMainCommand(g, why, root, piArgv = ["pi"]) {
-  const name = `Triage: ${g.members[0].title}`.slice(0, 48);
+  const name = `Issue: ${g.members[0].title}`.slice(0, 48);
   return { name: "space.new", args: { name, folder: root, argv: [...piArgv, "--name", "Main"], task: mainPrompt(g, why) } };
 }
 

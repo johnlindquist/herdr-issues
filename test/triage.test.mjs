@@ -118,7 +118,7 @@ test("CLI: missing, then ready with a cached second refresh, then act and dismis
   assert.match(copy.out.text, /^Refund timing {2}\[ticket-0001\]\nReported 2 times: ticket-0001, ticket-0002/);
   const send = cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run"], env);
   assert.deepEqual(send.out.command.slice(0, 3), ["hc", "send", "t9"]);
-  assert.match(send.out.prompt, /Why it's pressing \(Triage\): Blocks booking/);
+  assert.match(send.out.prompt, /Why it's pressing \(Issues\): Blocks booking/);
   const fixer = cli(["act", "card:closed-home", "fixer", "--root", root], env);
   assert.deepEqual([fixer.code, fixer.err.error.code], [1, "ACTION_UNAVAILABLE"]);
   const nm = cli(["act", "card:closed-home", "new-main", "--root", root], env);
@@ -145,5 +145,5 @@ test("CLI: a failed model keeps the last summary and says failed; no source says
 
 test("issue text names every merged report and the source", () => {
   const [g] = groupIssues([issue("t1", "Refund", "When?"), issue("t2", "Refund", "When?")]);
-  assert.equal(issueText(g, "money"), "Refund  [t1]\nReported 2 times: t1, t2\nWhy it's pressing (Triage): money\nSource: db t1\n\nWhen?");
+  assert.equal(issueText(g, "money"), "Refund  [t1]\nReported 2 times: t1, t2\nWhy it's pressing (Issues): money\nSource: db t1\n\nWhen?");
 });

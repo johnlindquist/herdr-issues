@@ -90,7 +90,7 @@ export function issueText(g, why = null) {
   const i = g.members[0];
   const lines = [`${i.title}  [${i.id}]`];
   if (g.members.length > 1) lines.push(`Reported ${g.members.length} times: ${g.members.map((m) => m.id).join(", ")}`);
-  if (why) lines.push(`Why it's pressing (Triage): ${why}`);
+  if (why) lines.push(`Why it's pressing (Issues): ${why}`);
   if (i.labels.length) lines.push(`Labels: ${i.labels.join(", ")}`);
   const authors = [...new Set(g.members.map((m) => m.author).filter(Boolean))];
   if (authors.length) lines.push(`From: ${authors.join(", ")}`);

@@ -5,7 +5,7 @@ set -e
 src="$(cd "$(dirname "$0")" && pwd)"
 mods="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods"
 mkdir -p "$mods/triage/icons" "$mods/triage/src" "$mods/triage-menu"
-cp "$src"/main.js "$src"/triage.mjs "$src"/mod.json "$mods/triage/"
+cp "$src"/main.js "$src"/nav.js "$src"/triage.mjs "$src"/mod.json "$mods/triage/"
 cp "$src"/src/*.mjs "$mods/triage/src/"
 cp "$src"/icons/*.svg "$mods/triage/icons/"
 cp "$src"/menu/main.js "$src"/menu/mod.json "$mods/triage-menu/"
