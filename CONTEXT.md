@@ -30,6 +30,18 @@ project in the shown space and lets you act on one. Internal ids stay `triage` (
 - **Main**: the space's Pi named `Main` (else its first Pi). **Fixer**: an agent in the space whose
   session or tab is named Fixer. Triage never watches either; it only sends them a prompt.
 
+## Instructions
+
+`src/triage.mjs` `INSTRUCTIONS`: **never-overstate** (default, hill-climbed 2026-11-12; 3 of 25 lines overstated on the installed code, against 19 of 25 for the original) and **baseline** (the original, kept for the course's "before"). Pick it with `--instruction`, `config --instruction` or `TRIAGE_INSTRUCTION`. An unknown name is an error. Changing it re-reads the issues, because the instruction is part of the input hash.
+
+## Hand to Fixer
+
+`fixerPrompt` is the issue and nothing else: "Fixer: an issue from the Issues widget", followed by the issue text. The Fixer's own role decides what to do; a test guards against widening its job.
+
+## Checks
+
+`checks.md`: Do / Expect / Never against the real inbox, run with `node ~/dev/herdr-pi-widget/kit/check.mjs checks.md --runs 3`.
+
 ## Who decides what
 
 | Code | Model |
