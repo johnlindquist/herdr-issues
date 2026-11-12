@@ -14,7 +14,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 import { pickSources, SourceUnavailable } from "./src/sources.mjs";
 import { groupIssues, hashOf, issueText, compareIds, lastAt } from "./src/issue.mjs";
-import { DEFAULT_MODEL, SYSTEM, callModel, modelInput, parseSummary, others } from "./src/triage.mjs";
+import { DEFAULT_MODEL, DEFAULT_INSTRUCTION, INSTRUCTIONS, systemFor, callModel, modelInput, parseSummary, others } from "./src/triage.mjs";
 import { ACTIONS, ACTION_NAMES, ActionUnavailable, availability, mainPrompt, fixerPrompt, newMainCommand, openTarget } from "./src/actions.mjs";
 import { defaultStateDir, storeFor } from "./src/store.mjs";
 
@@ -48,7 +48,7 @@ async function configFor(args) {
   const store = storeFor(stateDir, root);
   const saved = await store.read("config.json", {});
   const pick = (k, env) => (typeof args[k] === "string" ? args[k] : saved[k] ?? process.env[env] ?? null);
-  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL };
+  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION };
 }
 
 function githubRepoOf(root) {
@@ -85,8 +85,8 @@ async function refresh(cfg, force) {
     if (sourceInfo.every((s) => s.error)) return await saveFailure(store, prev, new SourceUnavailable(sourceInfo.map((s) => s.name).join(","), sourceInfo.map((s) => s.error).join("; ")), cfg, t0, sourceInfo);
     const gatherMs = Date.now() - t0;
     const groups = groupIssues(issues);
-    const inputHash = hashOf({ g: groups.map((g) => [g.id, g.hash]), model: cfg.model, system: hashOf(SYSTEM) });
-    const base = { version: VERSION, root: cfg.root, sources: sourceInfo, model: cfg.model, groups, hashes: Object.fromEntries(groups.map((g) => [g.id, g.hash])) };
+    const inputHash = hashOf({ g: groups.map((g) => [g.id, g.hash]), model: cfg.model, system: hashOf(systemFor(cfg.instruction)) });
+    const base = { version: VERSION, root: cfg.root, sources: sourceInfo, model: cfg.model, instruction: cfg.instruction, groups, hashes: Object.fromEntries(groups.map((g) => [g.id, g.hash])) };
     if (!force && prev?.summary && prev.input_hash === inputHash && !prev.error) {
       const doc = { ...prev, ...base, checked_at: new Date().toISOString(), refresh: { at: new Date().toISOString(), cached: true, gather_ms: gatherMs, model_ms: 0, total_ms: Date.now() - t0, read_groups: 0, reused_groups: groups.length, tokens: null, cost_usd: 0 } };
       doc.history = [...(prev.history ?? []), doc.refresh].slice(-20);
@@ -101,7 +101,7 @@ async function refresh(cfg, force) {
       const why = Object.fromEntries((prev?.summary?.pressing ?? []).map((p) => [p.id, p.why]));
       input = modelInput(groups, force ? {} : { hashes: prev?.hashes, why });
       try {
-        reply = await callModel({ model: cfg.model, system: SYSTEM, input: input.text });
+        reply = await callModel({ model: cfg.model, system: systemFor(cfg.instruction), input: input.text });
         summary = parseSummary(reply.text, groups);
       } catch (/** @type {any} */ e) {
         modelError = String(e?.message || e);
@@ -165,6 +165,7 @@ async function view(cfg) {
     state: stateOf(doc),
     busy: cfg.store.busy(),
     model: doc?.model ?? cfg.model,
+    instruction: doc?.instruction ?? cfg.instruction,
     sources: doc?.sources ?? [],
     updated_at: doc?.updated_at ?? null,
     checked_at: doc?.checked_at ?? null,
@@ -245,12 +246,12 @@ const DESCRIBE = {
     refresh: "refresh --root <project> [--force]: read the sources; ask the model only when an issue changed (content hash), sending changed issues in full and unchanged ones as titles",
     act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (hc send) | new-main [--apply] (prints the herdr space.new command; --apply runs it) | fixer --terminal <Fixer terminal> | open | dismiss | restore. --dry-run records the receipt without doing it",
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
-    config: "config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id]: saved per project",
+    config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
     describe: "this description",
   },
   actions: ACTIONS,
   sources: { local: "<root>/data/rentaplace.db (open support tickets, feedback not rated good) and <root>/tracker/board.json (cards not done)", github: "open issues via `gh issue list` (read-only)" },
-  environment: { TRIAGE_MODEL: `default ${DEFAULT_MODEL}`, TRIAGE_SOURCE: "local | github | local,github", TRIAGE_REPO: "owner/name", TRIAGE_STATE: "state dir (default ~/.cache/herdr-triage/default)", TRIAGE_MODEL_CMD: 'JSON argv run instead of Pi; gets {"model","system","input"} on stdin, prints the reply' },
+  environment: { TRIAGE_MODEL: `default ${DEFAULT_MODEL}`, TRIAGE_INSTRUCTION: `${Object.keys(INSTRUCTIONS).join(" | ")} (default ${DEFAULT_INSTRUCTION})`, TRIAGE_SOURCE: "local | github | local,github", TRIAGE_REPO: "owner/name", TRIAGE_STATE: "state dir (default ~/.cache/herdr-triage/default)", TRIAGE_MODEL_CMD: 'JSON argv run instead of Pi; gets {"model","system","input"} on stdin, prints the reply' },
 };
 
 function fail(e) {
@@ -275,7 +276,7 @@ try {
       out = await explain(cfg, a1);
     } else if (cmd === "config") {
       const saved = await cfg.store.read("config.json", {});
-      for (const k of ["source", "repo", "model"]) if (typeof args[k] === "string") saved[k] = args[k];
+      for (const k of ["source", "repo", "model", "instruction"]) if (typeof args[k] === "string") saved[k] = args[k];
       await cfg.store.write("config.json", saved);
       out = { root: cfg.root, config: saved };
     } else throw new UsageError(`unknown command ${cmd ?? "(none)"}; try describe`);

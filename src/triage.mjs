@@ -14,7 +14,7 @@ import { groupIssues, lastAt, compareIds, hashOf } from "./issue.mjs";
 export const DEFAULT_MODEL = "anthropic/claude-haiku-4-5"; // the cheap model herdr-todos uses
 export const MAX_PRESSING = 5;
 
-export const SYSTEM = `You triage incoming issues for a software project: support tickets, page feedback, tracker cards and GitHub issues.
+const BASELINE = `You triage incoming issues for a software project: support tickets, page feedback, tracker cards and GitHub issues.
 Pick the few issues that are most pressing right now (at most ${MAX_PRESSING}) and say why in one short line each.
 
 Pressing means, in this order: money is wrong or at risk (refunds, payouts, charges, prices); something blocks people from booking or using the product; many people report it (see "reported"); it is a duplicate of something already pressing (merge it instead of listing it twice).
@@ -25,6 +25,27 @@ Only use ids that appear in the input. Never invent issues, numbers or facts tha
 
 Reply with JSON only:
 {"headline": "...", "pressing": [{"ids": ["<id>", "..."], "title": "<short title, at most 60 characters>", "why": "..."}]}`;
+
+// Hill-climbed on 2026-11-12 (.cache/day2-rewrite/issues-grade: Haiku, 5 runs x 5 lines, a separate
+// judge model checking each why against the reports it cites): the baseline overstated 20 of 25
+// lines, this one 6 of 25. The baseline stays selectable so the "before" can be shown.
+const NEVER_OVERSTATE = `${BASELINE}
+
+Never overstate what a ticket says. Describe what people asked or saw in their own terms: a question about when something will happen is a question, not a report that it is missing or delayed. Do not add impact, severity or causes that no report states ("blocks", "trust", "under review") unless a report says so.
+Start each why with one plain category word (Money, Booking, Usage, Support) and never use the word "blocks" or "blocked" unless a report says something is blocked.
+For a tracker card, give its column and what it asks for, never a conclusion it has not reached ("confirms bug", "incorrect amount"). End the why after the evidence: no added consequence such as trust, communication or inventory.`;
+
+/** Named instructions: `--instruction <name>`, config `instruction`, or TRIAGE_INSTRUCTION. */
+export const INSTRUCTIONS = { "never-overstate": NEVER_OVERSTATE, baseline: BASELINE };
+export const DEFAULT_INSTRUCTION = "never-overstate";
+export const SYSTEM = INSTRUCTIONS[DEFAULT_INSTRUCTION];
+
+/** The system prompt for an instruction name; an unknown name is an error, not a silent fallback. */
+export function systemFor(name = DEFAULT_INSTRUCTION) {
+  const s = INSTRUCTIONS[name];
+  if (!s) throw Object.assign(new Error(`unknown instruction ${name} (use ${Object.keys(INSTRUCTIONS).join(" or ")})`), { code: "INVALID" });
+  return s;
+}
 
 // ---------- the model call (swappable: TRIAGE_MODEL_CMD) ----------
 

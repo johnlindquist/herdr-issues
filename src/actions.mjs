@@ -39,9 +39,12 @@ export function availability(action, g, targets = {}) {
 export const mainPrompt = (g, why) =>
   `The Issues widget passed you this issue.\n\n${issueText(g, why)}\n\nFind the cause before changing anything, and tell me what you found and what you'd change. Ask before touching money.`;
 
-/** The prompt the Fixer receives: the same issue, its job stated. */
-export const fixerPrompt = (g, why) =>
-  `The Issues widget handed you this issue to fix.\n\n${issueText(g, why)}\n\nReproduce it first, fix the cause, and report the change with the check that proves it. Ask before touching money.`;
+/**
+ * What the Fixer receives: the issue and nothing else. No instruction that widens its job: the
+ * Fixer's own role decides what to do (it fixes one failing test in one named file, and asks
+ * which file when none is named). John, 2026-11-12.
+ */
+export const fixerPrompt = (g, why) => `Fixer: an issue from the Issues widget.\n\n${issueText(g, why)}`;
 
 /** The Herdr command that starts a new Main (space) for the issue; the sidebar runs it, `act --apply` runs it via herdr-app. */
 export function newMainCommand(g, why, root, piArgv = ["pi"]) {

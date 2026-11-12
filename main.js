@@ -84,7 +84,7 @@ function disabledReason(action, item, targets) {
   return null;
 }
 
-const LONG = { Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Main: "Send to Main", New: "New Main from this", Fixer: "Hand to Fixer", Open: "Open source" };
+const LONG = { Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Main: "Send to Main", New: "New Main from this", Fixer: "Hand to Fixer: sends the issue only", Open: "Open source" };
 const SHORT = { "send-main": "Main", "new-main": "New", fixer: "Fixer", open: "Open" };
 const KIND = { github: "GitHub", inbox: "Support", feedback: "Feedback", board: "Tracker" };
 

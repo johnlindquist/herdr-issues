@@ -147,3 +147,30 @@ test("issue text names every merged report and the source", () => {
   const [g] = groupIssues([issue("t1", "Refund", "When?"), issue("t2", "Refund", "When?")]);
   assert.equal(issueText(g, "money"), "Refund  [t1]\nReported 2 times: t1, t2\nWhy it's pressing (Issues): money\nSource: db t1\n\nWhen?");
 });
+
+test("Hand to Fixer sends the issue and nothing that widens the Fixer's job", async () => {
+  const { fixerPrompt } = await import("../src/actions.mjs");
+  const [g] = groupIssues([issue("ticket-0001", "Refund timing", "When will my refund show?"), issue("ticket-0009", "Refund timing", "When will my refund show?")]);
+  const p = fixerPrompt(g, "Money: 2 guests ask when their refund will show");
+  assert.match(p, /^Fixer: an issue from the Issues widget\./);
+  for (const part of ["Refund timing", "[ticket-0001]", "ticket-0009", "Money: 2 guests ask", "When will my refund show?"]) assert.ok(p.includes(part), part);
+  for (const widen of [/reproduce/i, /fix the cause/i, /report the change/i, /\bcheck\b/i, /commit/i]) assert.doesNotMatch(p, widen);
+});
+
+test("the hill-climbed instruction is the default; the original stays selectable by name", async () => {
+  const { systemFor, INSTRUCTIONS, DEFAULT_INSTRUCTION, SYSTEM } = await import("../src/triage.mjs");
+  assert.equal(DEFAULT_INSTRUCTION, "never-overstate");
+  assert.equal(SYSTEM, systemFor());
+  assert.ok(systemFor().startsWith(systemFor("baseline")));
+  assert.match(systemFor(), /Never overstate what a ticket says/);
+  assert.doesNotMatch(systemFor("baseline"), /Never overstate/);
+  assert.throws(() => systemFor("nope"), /unknown instruction/);
+  assert.deepEqual(Object.keys(INSTRUCTIONS).sort(), ["baseline", "never-overstate"]);
+  const root = project();
+  const r = cli(["refresh", "--root", root, "--instruction", "baseline"]);
+  assert.equal(r.out.instruction, "baseline");
+  const log = path.join(r.state, "m.log");
+  cli(["refresh", "--root", root, "--force", "--instruction", "never-overstate"], { TRIAGE_STATE: r.state, FAKE_LOG: log });
+  assert.match(JSON.parse(fs.readFileSync(log, "utf8")).system, /Never overstate/);
+  assert.equal(cli(["refresh", "--root", root, "--instruction", "nope"], { TRIAGE_STATE: r.state }).err.error.code, "INVALID");
+});
