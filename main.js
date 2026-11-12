@@ -221,7 +221,7 @@ export default class Triage extends View {
       .rounded(7)
       .cursor_pointer()
       .border(1)
-      .border_color(selected ? t.accent : "transparent")
+      .border_color(selected ? t.accent : t.chrome)
       .when(selected, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
       .on_mouse_down("left", (_e, cx) => {
