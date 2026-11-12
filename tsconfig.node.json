@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2023"
+    ],
+    "checkJs": true,
+    "strict": true,
+    "strictNullChecks": false,
+    "noEmit": true,
+    "allowJs": true,
+    "types": [
+      "node"
+    ],
+    "noImplicitAny": false
+  },
+  "include": [
+    "triage.mjs",
+    "src/*.mjs"
+  ],
+  "// why": [
+    "The Node helper (triage.mjs, src/): strict except implicit any; JSDoc types at the boundaries."
+  ]
+}

@@ -1,0 +1,5 @@
+{ "version": 1, "cards": [
+  { "id": "closed-home", "title": "Closed home still bookable", "column": "todo", "owner": "Reservations", "description": "Checkout opens for a closed home.", "labels": ["bug"] },
+  { "id": "shipped", "title": "Old thing", "column": "done", "description": "Done already." },
+  { "id": "slow-search", "title": "Listings page is slow", "column": "in-progress", "description": "Broad searches are slow.", "labels": ["performance"] }
+] }

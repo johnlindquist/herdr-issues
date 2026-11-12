@@ -1,0 +1,13 @@
+{
+  "name": "herdr-triage",
+  "private": true,
+  "type": "module",
+  "description": "Triage sidebar for the Herdr app: the most pressing incoming issues, and what to do with each",
+  "scripts": {
+    "check": "sh fence.sh",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5"
+  }
+}
