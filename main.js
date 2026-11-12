@@ -399,7 +399,7 @@ export default class Issues extends View {
     const issues = rows.filter((r) => r.type === "issue").length;
     const seen = rows.slice(this.top, this.top + shown).filter((r) => r.type === "issue").length;
     const before = rows.slice(0, this.top).filter((r) => r.type === "issue").length;
-    this.rangeText = rows.length > shown ? `${before + 1}–${before + seen} of ${issues}` : null;
+    this.rangeText = rows.length > shown ? `${before + 1}–${before + Math.max(1, seen)} of ${issues}` : null;
     return div()
       .id("issues-list")
       .flex_1()
