@@ -85,6 +85,12 @@ export function briefViewFor({ root, activeRoot, id, doc }) {
 }
 export const viewBelongs = (view, activeRoot) => Boolean(view) && view.root === activeRoot;
 
+/** The issue every action is about: with a brief open, the issue that brief shows (or none, if it left the list), never whatever else is selected. */
+export function actionItem({ view, items, selected }) {
+  if (view) return (items ?? []).find((x) => x.id === view.id) ?? null;
+  return selected ?? null;
+}
+
 /** Said in the widget only while past conversations are on for the shown project. */
 export function settingsLine(doc) {
   return doc?.conversations === "on" ? "Past conversations: on for this project (text only, redacted)" : null;

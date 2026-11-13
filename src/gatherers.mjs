@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import { callModel } from "./triage.mjs";
 import { hashOf } from "./issue.mjs";
 import { raw, redactRaw, redact } from "./redact.mjs";
+import { fenced, DATA_NOTE, ORDER } from "./fence.mjs";
 import { safePath, collect, gatherInput, gatherSystem, parseBrief, briefText, excerptsFor, termsOf, GatherFailed, DEFAULT_GATHER_INSTRUCTION } from "./gather.mjs";
 
 /** @typedef {{ cite: string, text: string }} Item something code fetched; `cite` is how a finding points at it */
@@ -442,6 +443,7 @@ export function parseFindings(text, items) {
     if (!f.text) continue;
     const bad = !f.cites.length ? "no citation" : f.cites.find((c) => !known.has(c));
     if (bad) dropped.push({ ...f, reason: bad === "no citation" ? bad : `not something that was fetched: ${bad}` });
+    else if (ORDER.test(f.text)) dropped.push({ ...f, reason: "reads as an instruction, not a finding" }); // a real citation does not make an order a finding
     else if (findings.length < SWARM_LIMITS.findings) findings.push(f);
   }
   return { findings, dropped };
@@ -524,7 +526,7 @@ export function pickGatherers(names) {
 /** The model call of one gatherer: it gets what is left of the gatherer's time, and ends when the gatherer's signal fires. */
 function ask(ctx, system, input) {
   ctx.spent.called = true; // from here on the cost is unknown unless the reply reports it
-  return callModel({ model: ctx.model, system, input, timeout: Math.max(1, ctx.deadline - Date.now()), signal: ctx.signal });
+  return callModel({ model: ctx.model, system: `${system}\n\n${DATA_NOTE}`, input: fenced(input), timeout: Math.max(1, ctx.deadline - Date.now()), signal: ctx.signal });
 }
 
 async function runCode(g, ctx) {
@@ -675,7 +677,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   let planReply = null;
   const tp = Date.now();
   try {
-    planReply = await callModel({ model, system: planSystem(on), input: planInput(issue, facts), timeout: SWARM_LIMITS.planMs });
+    planReply = await callModel({ model, system: `${planSystem(on)}\n\n${DATA_NOTE}`, input: fenced(planInput(issue, facts)), timeout: SWARM_LIMITS.planMs });
     plan = validatePlan(planReply.text, on);
   } catch (/** @type {any} */ e) {
     plan = validatePlan("", on);

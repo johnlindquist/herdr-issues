@@ -17,7 +17,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
-import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -218,6 +218,11 @@ export default class Issues extends View {
     ];
   }
 
+  // The issue actions are about: the open brief's issue while a brief is open (clicked or typed), else the selection.
+  actionItem(doc) {
+    return actionItem({ view: this.view, items: this.items(doc), selected: this.selectedItem(doc) });
+  }
+
   selectedItem(doc) {
     const list = this.items(doc);
     return list.find((x) => x.id === this.selected[this.root]) ?? list[0] ?? null;
@@ -278,7 +283,7 @@ export default class Issues extends View {
     }
     if (this.collapsed) return false;
     if (k === "shift-f10" || k === "menu-key") {
-      const item = this.selectedItem(doc);
+      const item = this.actionItem(doc);
       if (item) this.menu(item);
       return true;
     }
@@ -290,7 +295,7 @@ export default class Issues extends View {
       this.reveal(doc);
       return true;
     }
-    const item = this.view ? list.find((x) => x.id === this.view.id) ?? this.selectedItem(doc) : this.selectedItem(doc);
+    const item = this.actionItem(doc); // with a brief open: the issue it shows, or none
     const bare = BARE.find((b) => b.key === k || b.keyLabel === k || (k === b.key.slice(-1).toUpperCase()));
     if (bare && item) {
       if (!gatherFailed(item)) this.notice = "Sending without context is offered only after gathering failed. M and N gather first.";
@@ -677,7 +682,7 @@ export default class Issues extends View {
       .when(Boolean(doc?.headline), (el) => el.child(div().id("issues-headline").px(14).mb(6).h(38).flex_none().overflow_hidden().whitespace_normal().text_size(12).text_color(t.foreground).tooltip(doc.headline).child(doc.headline)))
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
       .child(this.view ? this.brief(t) : this.list(t, rows, item, hasKeys))
-      .when(Boolean(doc), (el) => el.child(this.legend(t, item)))
+      .when(Boolean(doc), (el) => el.child(this.legend(t, this.actionItem(doc))))
       .child(
         h_flex()
           .flex_none()

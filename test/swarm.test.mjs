@@ -149,7 +149,7 @@ test("past conversations: this project's folder only; text only; redacted before
   const none = await fetchConversations({ root: "/nowhere/at/all", agentDir: agent, terms: ["closed"], conversations: { mode: "on", of: null } });
   assert.deepEqual([none.items, none.read.found, none.searched], [[], false, ["no past Pi conversations found for this project"]]);
   // Redaction on its own.
-  const r = redact("token: ghp_abcdefghijklmnopqrstuvwx1234 API_KEY=abcd1234efgh Bearer abcdefghijklmnop.qrstu mail me at jo@example.com AKIAABCDEFGHIJKLMNOP /home/jo/x.txt keep src/domain/bookings.ts and createBookingForListing");
+  const r = redact("note token: ghp_abcdefghijklmnopqrstuvwx1234 API_KEY=abcd1234efgh Bearer abcdefghijklmnop.qrstu mail me at jo@example.com AKIAABCDEFGHIJKLMNOP /home/jo/x.txt keep src/domain/bookings.ts and createBookingForListing");
   assert.doesNotMatch(r, /ghp_|abcd1234efgh|abcdefghijklmnop\.|jo@example|AKIA|\/home\/jo/);
   assert.match(r, /keep src\/domain\/bookings\.ts and createBookingForListing/);
 });

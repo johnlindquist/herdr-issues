@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { groupIssues, parseIssue } from "../src/issue.mjs";
 import { collect, parseBrief, briefText, resolveCite, resolverFor, gatherInput, GatherFailed, LIMITS } from "../src/gather.mjs";
-import { issueFor, assemblePrompt, loadRules, RulesMissing, PROJECT_RULES, DEFAULT_RULES_FILE, BRIEF_INTRO } from "../src/handoff.mjs";
+import { issueFor, assemblePrompt, loadRules, RulesMissing, PROJECT_RULES, DEFAULT_RULES_FILE, BRIEF_INTRO, DATA_INTRO, RULES_INTRO } from "../src/handoff.mjs";
 import { ACTIONS, newMainCommand } from "../src/actions.mjs";
 import { legendEntries, menuItems, rowStatus, wrap, briefViewLines } from "../surface.js";
 
@@ -100,12 +100,13 @@ test("brief: uncited and unresolvable claims are dropped, each with its reason; 
 
 test("prompt assembly: the issue, then the brief, then the rules, and nothing else", () => {
   const rules = { path: "/p/issues-rules.md", text: "- Ask before touching money." };
-  const p = assemblePrompt({ issue: "ISSUE TEXT", brief: "BRIEF TEXT", rules });
-  assert.equal(p, `The Issues widget passed you this issue.\n\nISSUE TEXT\n\n${BRIEF_INTRO}\nBRIEF TEXT\n\nRules for this hand-off (/p/issues-rules.md):\n- Ask before touching money.`);
+  const p = assemblePrompt({ issue: "ISSUE TEXT", brief: "BRIEF TEXT", rules, nonce: "n1" });
+  // What the data is; the fenced data (issue, then brief); the rules, outside the fence and last.
+  assert.equal(p, `The Issues widget passed you this issue. ${DATA_INTRO}\n\n${BRIEF_INTRO}\n\n<<<DATA n1\nISSUE TEXT\n\nCONTEXT BRIEF:\nBRIEF TEXT\n<<<END DATA n1\n\nRules for this hand-off (/p/issues-rules.md). ${RULES_INTRO}\n- Ask before touching money.`);
   assert.match(BRIEF_INTRO, /Start from this brief; open files only for what is missing/);
   assert.match(BRIEF_INTRO, /leads to verify, not as facts/);
   assert.ok(p.indexOf("ISSUE TEXT") < p.indexOf("BRIEF TEXT") && p.indexOf("BRIEF TEXT") < p.indexOf("- Ask before"));
-  assert.equal(assemblePrompt({ issue: "ISSUE TEXT", brief: null, rules }), "The Issues widget passed you this issue.\n\nISSUE TEXT\n\nRules for this hand-off (/p/issues-rules.md):\n- Ask before touching money.");
+  assert.equal(assemblePrompt({ issue: "ISSUE TEXT", brief: null, rules, nonce: "n1" }), `The Issues widget passed you this issue. ${DATA_INTRO}\n\n<<<DATA n1\nISSUE TEXT\n<<<END DATA n1\n\nRules for this hand-off (/p/issues-rules.md). ${RULES_INTRO}\n- Ask before touching money.`);
   assert.throws(() => assemblePrompt({ issue: "", brief: null, rules }), /issue/);
   assert.throws(() => assemblePrompt({ issue: "x", brief: null, rules: { path: "", text: "" } }), RulesMissing);
 });
@@ -184,7 +185,7 @@ test("CLI: prompt shows exactly what would be sent; send-main and new-main send 
   const p = cli(["prompt", "card:closed-home", "--root", root], env);
   assert.equal(p.code, 0, p.raw);
   assert.equal(p.out.context.state, "gathered");
-  const parts = ["The Issues widget passed you this issue.", "Closed home bookable  [card:closed-home]", "[ticket-0005] Di", "Context gathered by Issues", "Where it likely lives:", "[src/bookings.ts:2]", "Rules for this hand-off (", "Find the cause before changing anything"];
+  const parts = ["The Issues widget passed you this issue.", "Context gathered by Issues", "\n<<<DATA ", "Closed home bookable  [card:closed-home]", "[ticket-0005] Di", "CONTEXT BRIEF:", "Where it likely lives:", "[src/bookings.ts:2]", "Rules for this hand-off (", "Find the cause before changing anything"];
   let at = -1;
   for (const part of parts) {
     const i = p.out.prompt.indexOf(part);
@@ -194,7 +195,9 @@ test("CLI: prompt shows exactly what would be sent; send-main and new-main send 
   assert.doesNotMatch(p.out.prompt, /src\/payments\.ts|Everyone is angry/);
   const send = cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run"], env);
   assert.equal(send.code, 0, send.raw);
-  assert.equal(send.out.prompt, p.out.prompt);
+  const same = (x) => x.replace(/^<<<(END )?DATA \w+$/gm, "<<<$1DATA *"); // each prompt has its own fresh fence word; everything else is identical
+  assert.notEqual(send.out.prompt, p.out.prompt, "a fresh fence word per prompt");
+  assert.equal(same(send.out.prompt), same(p.out.prompt));
   assert.deepEqual(send.out.command.slice(0, 3), ["hc", "send", "t9"]);
   assert.equal(send.out.context.state, "reused");
   const pressed = cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run", "--gathered", p.out.context.key], env);
@@ -202,7 +205,7 @@ test("CLI: prompt shows exactly what would be sent; send-main and new-main send 
   assert.equal(cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run", "--gathered", "other"], env).out.context.state, "reused");
   assert.equal(send.out.rules_file, DEFAULT_RULES_FILE);
   const nm = cli(["act", "card:closed-home", "new-main", "--root", root], env);
-  assert.deepEqual([nm.out.command.name, nm.out.command.args.task, nm.out.command.args.folder], ["space.new", p.out.prompt, root]);
+  assert.deepEqual([nm.out.command.name, same(nm.out.command.args.task), nm.out.command.args.folder], ["space.new", same(p.out.prompt), root]);
   assert.deepEqual(nm.out.command.args.argv, ["pi", "--name", "Main"]);
   assert.equal(cli(["act", "card:closed-home", "send-main", "--root", root], env).err.error.code, "NO_MAIN");
   const r = receiptsOf(first.state);
