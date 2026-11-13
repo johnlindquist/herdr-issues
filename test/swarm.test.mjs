@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { GATHERERS, validatePlan, planSystem, runSwarm, parseFindings, swarmText, availableGatherers, sessionsDirFor, sessionTexts, redact, fetchConversations, COST_CAP_USD, SWARM_LIMITS } from "../src/gatherers.mjs";
+import { GATHERERS, fetchGithub, validatePlan, planSystem, runSwarm, parseFindings, swarmText, availableGatherers, sessionsDirFor, sessionTexts, redact, fetchConversations, COST_CAP_USD, SWARM_LIMITS } from "../src/gatherers.mjs";
 import { assemblePrompt } from "../src/handoff.mjs";
 import { progressLines, rowStatusLines, gathererLine, briefViewLines, costLine } from "../surface.js";
 
@@ -96,6 +96,20 @@ test("a failed or timed-out gatherer never blocks: each ends in a named state, a
   assert.match(text, /slow.*: timed out/i);
   assert.match(text, /boom.*: failed \(gh is not installed\)/i);
   assert.match(text, /empty.*: nothing relevant found\. Looked at: 3 commits\./i);
+});
+
+test("GitHub: when gh cannot search at all, that is a named failure, not 'nothing relevant'; one failed search among others is listed", async () => {
+  const base = { root: os.tmpdir(), terms: ["closed", "clos"], titleTerms: ["closed"], candidates: { files: [] }, repo: "o/r", fetchJson: async () => null };
+  const down = async (cmd, argv) => (argv[0] === "--version" ? { ok: true, out: "gh 2", err: "" } : { ok: false, out: "", err: "To get started with GitHub CLI, please run: gh auth login" });
+  await assert.rejects(fetchGithub({ ...base, exec: down }), /gh could not search GitHub \(.*gh auth login/);
+  const calls = [];
+  const some = async (cmd, argv) => (calls.push(argv), argv[0] === "--version" ? { ok: true, out: "", err: "" } : argv[1] === "prs" ? { ok: false, out: "", err: "HTTP 403" } : { ok: true, out: argv[1] === "issues" ? JSON.stringify([{ number: 7, title: "Closed home", url: "https://github.com/o/r/issues/7", state: "open", updatedAt: "2026-01-01" }]) : "[]", err: "" });
+  const got = await fetchGithub({ ...base, exec: some });
+  assert.deepEqual(got.items.map((i) => i.cite), ["https://github.com/o/r/issues/7"]);
+  assert.ok(got.searched.some((s) => /^failed: prs search in o\/r: HTTP 403/.test(s)));
+  assert.ok(calls.every((a) => a[0] === "--version" || a[0] === "search"), "read-only: only gh search");
+  assert.ok(calls.some((a) => a[2] === "closed") && !calls.some((a) => a[2] === "closed clos"), "a word's stem is not searched as a second word");
+  await assert.rejects(fetchGithub({ ...base, exec: async () => ({ ok: false, out: "", err: "" }) }), /gh is not installed/);
 });
 
 test("a finding is kept only when every citation is something code fetched", () => {

@@ -207,9 +207,12 @@ export async function fetchGithub(ctx) {
   const words = ctx.terms.filter((t) => !ctx.terms.some((o) => o !== t && o.startsWith(t))); // "clos" is only the stem of "closed"
   const q = words.slice(0, 2).join(" ");
   if (!q) return { items, searched: ["no distinctive terms to search GitHub for"] };
+  const failed = [];
+  let worked = 0;
   const search = async (kind, repo, query, limit) => {
     const r = await ctx.exec("gh", ["search", kind, query, ...(repo ? ["--repo", repo] : []), "--limit", String(limit), "--json", kind === "repos" ? "fullName,description,url,stargazersCount,updatedAt" : "number,title,url,state,updatedAt,repository"]);
-    if (!r.ok) return searched.push(`${kind} search failed${repo ? ` in ${repo}` : ""}: ${clip(r.err, 80)}`);
+    if (!r.ok) return failed.push(`${kind} search${repo ? ` in ${repo}` : ""}: ${clip(r.err, 120)}`);
+    worked++;
     searched.push(`${kind}${repo ? ` in ${repo}` : " on GitHub"} for "${query}"`);
     for (const x of parse(r.out, [])) {
       if (!x?.url || items.some((i) => i.cite === x.url)) continue;
@@ -233,6 +236,9 @@ export async function fetchGithub(ctx) {
   if (!pkgs.length) searched.push("the gathered code imports no npm packages, so no upstream repositories were searched");
   jobs.push(search("repos", null, ctx.titleTerms.slice(0, 3).join(" ") || q, 3));
   await Promise.all(jobs);
+  // Every search failed (not signed in, offline, rate-limited): that is a named failure, never "nothing relevant".
+  if (!worked && failed.length) throw new Error(`gh could not search GitHub (${failed[0]})`);
+  for (const f of failed) searched.push(`failed: ${f}`);
   return { items: items.slice(0, SWARM_LIMITS.items), searched };
 }
 
