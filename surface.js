@@ -103,6 +103,7 @@ const secs = (ms) => `${(Number(ms ?? 0) / 1000).toFixed(1)} s`;
 const usd = (c) => (c == null ? "cost not reported" : `$${Number(c).toFixed(4)}`);
 /** "gathered in 4.2 s, $0.0031" or "reused the saved brief". */
 export function costLine(doc) {
+  if (doc.cached && doc.plan) return `Reused the saved brief (first gathered in ${secs(doc.first?.ms?.total)}, ${doc.calls} small-model calls, ${usd(doc.first?.cost_usd)}; cap ${usd(doc.cost_cap_usd)} per press)`;
   if (doc.cached) return `Reused the saved brief (first gathered in ${secs(doc.first?.ms?.total)}, ${usd(doc.first?.cost_usd)})`;
   if (doc.plan) return `Gathered in ${secs(doc.ms?.total)} (planning ${secs(doc.ms?.plan)}, gatherers ${secs(doc.ms?.swarm)}), ${doc.calls} small-model calls, ${usd(doc.cost_usd)}${doc.over_cap ? ` — OVER the cap of ${usd(doc.cost_cap_usd)} per press` : ` (cap ${usd(doc.cost_cap_usd)} per press)`}`;
   return `Gathered in ${secs(doc.ms?.total)} (script ${secs(doc.ms?.collect)}, model ${secs(doc.ms?.model)}), ${usd(doc.cost_usd)}`;
