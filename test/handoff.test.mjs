@@ -266,6 +266,14 @@ test("brief view: wrapped lines carry the brief, what was dropped, the rules fil
   for (const part of ["- A guest says x [ticket-0003]", "Dropped by the citation check (1):", "Rules file: /w/rules.md (default)", "Reused the saved brief (first gathered in 4.2 s,", "$0.0031)", "PROMPT LINE"]) assert.ok(lines.some((l) => l.includes(part)), `${part}\n${lines.join("\n")}`);
 });
 
+test("the footer after a hand-off says where it went, and the brief's time and cost or that it was reused", async () => {
+  const { sentNotice } = await import("../surface.js");
+  assert.equal(sentNotice({ action: "send-main", context: { state: "gathered", ms: 6652, cost_usd: 0.00916 } }), "Sent to Main · brief 6.7 s, $0.0092");
+  assert.equal(sentNotice({ action: "send-main", context: { state: "reused" } }), "Sent to Main · brief reused");
+  assert.equal(sentNotice({ action: "new-main", context: { state: "gathered", ms: 6617, cost_usd: null } }), "New Main started · brief 6.6 s, cost not reported");
+  assert.equal(sentNotice({ action: "new-main", context: { state: "none" } }), "New Main started without context");
+});
+
 test("new Main: the prompt rides as space.new's task, which the app passes to Pi as its first message", () => {
   const c = newMainCommand("Refund timing unclear and other words that run long enough to be cut", "PROMPT", "/p");
   assert.deepEqual(c, { name: "space.new", args: { name: "Issue: Refund timing unclear and other words tha", folder: "/p", argv: ["pi", "--name", "Main"], task: "PROMPT" } });

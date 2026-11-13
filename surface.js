@@ -82,12 +82,12 @@ export function costLine(doc) {
   return `Gathered in ${secs(doc.ms?.total)} (script ${secs(doc.ms?.collect)}, model ${secs(doc.ms?.model)}), ${usd(doc.cost_usd)}`;
 }
 
-/** After a hand-off: the footer line. */
+/** After a hand-off: the footer line, short enough to fit the footer. */
 export function sentNotice(receipt) {
-  const to = receipt.action === "new-main" ? "Started a new Main" : "Sent to Main";
+  const to = receipt.action === "new-main" ? "New Main started" : "Sent to Main";
   const c = receipt.context ?? {};
   if (c.state === "none") return `${to} without context`;
-  return `${to} with the brief (${c.state === "reused" ? "reused" : `gathered in ${secs(c.ms)}, ${usd(c.cost_usd)}`})`;
+  return `${to} · brief ${c.state === "reused" ? "reused" : `${secs(c.ms)}, ${usd(c.cost_usd)}`}`;
 }
 
 /** The brief view as fixed-height lines: the brief, what the check dropped, the rules file, cost, and what was last sent. */

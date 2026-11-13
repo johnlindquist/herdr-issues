@@ -330,7 +330,10 @@ export default class Issues extends View {
       this.notice = why;
       return cx.notify();
     }
-    if (this.gathering.has(id)) return;
+    if (this.gathering.has(id)) {
+      this.notice = "Still gathering context for this issue…";
+      return cx.notify();
+    }
     const bare = BARE.find((b) => b.name === action);
     const real = bare ? bare.of : action;
     const terminal = real === "send-main" ? targets.main : null;
