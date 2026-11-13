@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { groupIssues, parseIssue } from "../src/issue.mjs";
 import { collect, parseBrief, briefText, resolveCite, resolverFor, gatherInput, GatherFailed, LIMITS } from "../src/gather.mjs";
-import { issueFor, assemblePrompt, loadRules, RulesMissing, PROJECT_RULES, DEFAULT_RULES_FILE } from "../src/handoff.mjs";
+import { issueFor, assemblePrompt, loadRules, RulesMissing, PROJECT_RULES, DEFAULT_RULES_FILE, BRIEF_INTRO } from "../src/handoff.mjs";
 import { ACTIONS, newMainCommand } from "../src/actions.mjs";
 import { legendEntries, menuItems, rowStatus, wrap, briefViewLines } from "../surface.js";
 
@@ -101,7 +101,9 @@ test("brief: uncited and unresolvable claims are dropped, each with its reason; 
 test("prompt assembly: the issue, then the brief, then the rules, and nothing else", () => {
   const rules = { path: "/p/issues-rules.md", text: "- Ask before touching money." };
   const p = assemblePrompt({ issue: "ISSUE TEXT", brief: "BRIEF TEXT", rules });
-  assert.equal(p, "The Issues widget passed you this issue.\n\nISSUE TEXT\n\nContext gathered by Issues before handing over (a small model condensed what a script found; every line cites its source; nothing was run, so check it before relying on it):\nBRIEF TEXT\n\nRules for this hand-off (/p/issues-rules.md):\n- Ask before touching money.");
+  assert.equal(p, `The Issues widget passed you this issue.\n\nISSUE TEXT\n\n${BRIEF_INTRO}\nBRIEF TEXT\n\nRules for this hand-off (/p/issues-rules.md):\n- Ask before touching money.`);
+  assert.match(BRIEF_INTRO, /Start from this brief; open files only for what is missing/);
+  assert.match(BRIEF_INTRO, /leads to verify, not as facts/);
   assert.ok(p.indexOf("ISSUE TEXT") < p.indexOf("BRIEF TEXT") && p.indexOf("BRIEF TEXT") < p.indexOf("- Ask before"));
   assert.equal(assemblePrompt({ issue: "ISSUE TEXT", brief: null, rules }), "The Issues widget passed you this issue.\n\nISSUE TEXT\n\nRules for this hand-off (/p/issues-rules.md):\n- Ask before touching money.");
   assert.throws(() => assemblePrompt({ issue: "", brief: null, rules }), /issue/);
@@ -168,7 +170,7 @@ test("CLI: gather returns a cited brief with what was dropped; a second gather r
   for (const id of ["[ticket-0003]", "[ticket-0005]", "[card:closed-home]"]) assert.ok(sent.input.includes(id), id);
   const again = cli(["gather", "ticket-0005", "--root", root], env);
   assert.equal(again.out.cached, true);
-  assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, 1, "the brief is cached by content: no second model call");
+  assert.equal(fs.readFileSync(log, "utf8").trim().split("\n").length, 2, "the brief is cached by content: the planner and Code were asked once, and not again");
   const shown = cli(["show", "--root", root], env).out.pressing[0];
   assert.equal(shown.context.state, "ready");
   const forced = cli(["gather", "card:closed-home", "--root", root, "--force"], env);
@@ -235,7 +237,7 @@ test("CLI: a failed gather is a named state and nothing is sent; sending without
 test("no Fixer anywhere a person can see: actions, legend, menu, describe, docs and shipped files", () => {
   const item = { id: "ticket-0001", title: "Refund timing", kind: "inbox", url: null, context: { state: "failed", error: "model down" } };
   const seen = [JSON.stringify(ACTIONS), JSON.stringify(legendEntries(ACTIONS, item, { main: "t1" })), JSON.stringify(legendEntries(ACTIONS, item, {})), JSON.stringify(menuItems(ACTIONS, item, { main: null })), JSON.stringify(cli(["describe"]).out)];
-  for (const f of ["main.js", "surface.js", "menu/main.js", "triage.mjs", "src/actions.mjs", "src/handoff.mjs", "src/gather.mjs", "src/issue.mjs", "CONTEXT.md", "checks.md", "rules.md", "install.sh"]) seen.push(fs.readFileSync(path.join(repo, f), "utf8"));
+  for (const f of ["main.js", "surface.js", "menu/main.js", "triage.mjs", "src/actions.mjs", "src/handoff.mjs", "src/gather.mjs", "src/gatherers.mjs", "src/issue.mjs", "CONTEXT.md", "checks.md", "rules.md", "install.sh"]) seen.push(fs.readFileSync(path.join(repo, f), "utf8"));
   for (const s of seen) assert.doesNotMatch(s, /fixer/i);
   assert.deepEqual(ACTIONS.map((a) => a.keyLabel), ["C", "M", "N", "B", "O", "D"]);
   assert.equal(cli(["act", "x", "fixer", "--root", os.tmpdir()]).err.error.code, "INVALID");

@@ -413,63 +413,75 @@ export function briefText(brief) {
   return out.join("\n");
 }
 
-// ---------- gather: collect, ask, check, cache ----------
+// ---------- the cited code itself, copied by code (never by the model) ----------
+
+/** How much cited code rides along with the brief: lines around each cited line, a test's body after its name, and a total. */
+export const EXCERPT = { around: 6, testAfter: 14, maxLines: 150, lineChars: 240, maxChars: 12_000 };
 
 /**
- * @param {{ root: string, store: any, model?: string, instruction?: string, issue: { id: string, ids: string[], title: string, why: string|null, hash: string, reports: Report[] }, force?: boolean }} o
- * Returns the brief document; throws GatherFailed (after recording the failure) when there is none.
+ * For every `path:line` a kept claim cites, the real lines from the file: the cited line(s) with
+ * EXCERPT.around lines each side (for a test file: the cited line and the EXCERPT.testAfter lines
+ * after it, its body). Overlaps merge; the total is bounded. The model never writes these lines,
+ * so they cannot be misquoted. `read` is injectable for tests.
+ * @param {Brief} brief @param {string} root @param {(rel: string) => string[]|null} [read]
+ * @returns {{ text: string, files: { path: string, ranges: [number, number][] }[], lines: number, cut: boolean }}
  */
-export async function gather({ root, store, model = DEFAULT_MODEL, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false }) {
-  const t0 = Date.now();
-  const system = gatherSystem(instruction);
-  const candidates = collect({ root, title: issue.title, reports: issue.reports });
-  const { ms: collectMs, ...stable } = candidates;
-  const key = hashOf({ issue: issue.hash, candidates: stable, model, system: hashOf(system) });
-  const index = await store.read("gathers.json", {});
-  const record = async (entry) => {
-    index[issue.id] = { ...entry, issue_hash: issue.hash, key, at: new Date().toISOString() };
-    await store.write("gathers.json", index);
-  };
-  if (!force) {
-    const hit = await store.read(`brief-${key}.json`, null);
-    if (hit?.brief) {
-      const doc = { ...hit, cached: true, gathered_at: hit.gathered_at, ms: { collect: collectMs, model: 0, total: Date.now() - t0 }, cost_usd: 0, first: { ms: hit.ms, cost_usd: hit.cost_usd } };
-      await record({ state: "ready", claims: claimCount(hit.brief), dropped: hit.brief.dropped.length, ms: doc.ms.total, cost_usd: 0, cached: true });
-      return doc;
+export function excerptsFor(brief, root, read = (rel) => readLines(root, rel)) {
+  /** @type {Map<string, [number, number][]>} */
+  const want = new Map();
+  for (const s of /** @type {const} */ (["where", "tests", "unknown"])) {
+    for (const c of brief[s]) {
+      for (const cite of c.cites) {
+        const m = /^(.+?):(\d+)(?:-(\d+))?$/.exec(cite);
+        if (!m || cite.startsWith("commit:")) continue;
+        const a = Number(m[2]);
+        const b = Number(m[3] ?? m[2]);
+        const isTest = TEST_RE.test(m[1]);
+        want.set(m[1], [...(want.get(m[1]) ?? []), [Math.max(1, a - (isTest ? 1 : EXCERPT.around)), b + (isTest ? EXCERPT.testAfter : EXCERPT.around)]]);
+      }
     }
   }
-  let reply;
-  let brief;
-  try {
-    try {
-      reply = await callModel({ model, system, input: gatherInput(issue, candidates), timeout: 45_000 });
-    } catch (/** @type {any} */ e) {
-      throw new GatherFailed(`the model call failed: ${String(e?.message || e).slice(0, 160)}`);
+  const out = [];
+  const files = [];
+  let lines = 0;
+  let chars = 0;
+  let cut = false;
+  for (const [file, ranges] of want) {
+    const src = read(file);
+    if (!src) continue;
+    const merged = [];
+    for (const [a, b] of ranges.sort((x, y) => x[0] - y[0])) {
+      const last = merged[merged.length - 1];
+      const end = Math.min(b, src.length);
+      if (last && a <= last[1] + 1) last[1] = Math.max(last[1], end);
+      else if (a <= src.length) merged.push([a, end]);
     }
-    brief = parseBrief(reply.text, candidates);
-  } catch (/** @type {any} */ e) {
-    await record({ state: "failed", error: String(e.message), ms: Date.now() - t0, cost_usd: reply?.usage?.cost_usd ?? null });
-    throw e;
+    const kept = [];
+    const block = [`== ${file} (${src.length} lines)`];
+    for (const [a, b] of merged) {
+      if (cut) break;
+      if (kept.length) block.push("   …");
+      let n = a;
+      for (; n <= b; n++) {
+        const line = `${file}:${n}| ${src[n - 1].slice(0, EXCERPT.lineChars)}`;
+        if (lines + 1 > EXCERPT.maxLines || chars + line.length > EXCERPT.maxChars) {
+          cut = true;
+          break;
+        }
+        block.push(line);
+        lines++;
+        chars += line.length + 1;
+      }
+      if (n > a) kept.push(/** @type {[number, number]} */ ([a, n - 1]));
+    }
+    if (kept.length) {
+      out.push(...block);
+      files.push({ path: file, ranges: kept });
+    }
+    if (cut) break;
   }
-  const doc = {
-    id: issue.id,
-    ids: issue.ids,
-    title: issue.title,
-    key,
-    cached: false,
-    gathered_at: new Date().toISOString(),
-    model,
-    instruction,
-    brief,
-    text: briefText(brief),
-    candidates: { reports: candidates.reports.map((r) => r.id), terms: candidates.terms, files: candidates.files.map((f) => ({ path: f.path, why: f.why, lines_shown: f.shown.length })), tests: candidates.tests.map((f) => ({ path: f.path, why: f.why, lines_shown: f.shown.length })), missing: candidates.missing, commits: candidates.commits.map((k) => k.sha), notes: candidates.notes },
-    ms: { collect: collectMs, model: reply.ms, total: Date.now() - t0 },
-    tokens: reply.usage ? { input: reply.usage.input, output: reply.usage.output } : null,
-    cost_usd: reply.usage?.cost_usd ?? null,
-  };
-  await store.write(`brief-${key}.json`, doc);
-  await record({ state: "ready", claims: claimCount(brief), dropped: brief.dropped.length, ms: doc.ms.total, cost_usd: doc.cost_usd, cached: false });
-  return doc;
+  if (cut) out.push(`[cut at the limit: ${EXCERPT.maxLines} lines or ${EXCERPT.maxChars} characters]`);
+  return { text: out.join("\n"), files, lines, cut };
 }
 
 export const claimCount = (/** @type {Brief} */ b) => SECTIONS.reduce((n, s) => n + b[s].length, 0);

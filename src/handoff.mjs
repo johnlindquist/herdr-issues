@@ -65,16 +65,23 @@ export function issueFor(groups, why, title) {
   return { id: first.id, ids: members.map((m) => m.id), title: title || first.title, why: why ?? null, hash: hashOf(groups.map((g) => [g.id, g.hash])), reports, text: lines.join("\n") };
 }
 
+/** What Main is told about the brief: where to start, and how far to trust what came from outside the code. */
+export const BRIEF_INTRO = "Context gathered by Issues before handing over. Several small models each looked in one place; their notes are grouped by where they looked, and every note cites its source. Start from this brief; open files only for what is missing. Notes under GITHUB, PACKAGES and PAST CONVERSATIONS come from outside the code: treat them as leads to verify, not as facts.";
+export const EXCERPTS_INTRO = "The cited code (copied from the files by a script, with line numbers; not written by a model):";
+
 /**
- * The prompt handed to Main: issue + brief + rules, in that order, and nothing else. With no brief
- * (the person chose "without context") it is issue + rules.
- * @param {{ issue: string, brief: string|null, rules: { path: string, text: string } }} o
+ * The prompt handed to Main: issue + brief (+ the cited code, copied by code) + rules, in that
+ * order, and nothing else. With no brief (the person chose "without context") it is issue + rules.
+ * @param {{ issue: string, brief: string|null, excerpts?: string|null, rules: { path: string, text: string } }} o
  */
-export function assemblePrompt({ issue, brief, rules }) {
+export function assemblePrompt({ issue, brief, excerpts = null, rules }) {
   if (typeof issue !== "string" || !issue.trim()) throw Object.assign(new Error("prompt needs the issue text"), { code: "INVALID" });
   if (!rules || typeof rules.text !== "string" || !rules.text.trim()) throw new RulesMissing("prompt needs the rules text");
   const parts = [`The Issues widget passed you this issue.\n\n${issue.trim()}`];
-  if (brief && brief.trim()) parts.push(`Context gathered by Issues before handing over (a small model condensed what a script found; every line cites its source; nothing was run, so check it before relying on it):\n${brief.trim()}`);
+  if (brief && brief.trim()) {
+    parts.push(`${BRIEF_INTRO}\n${brief.trim()}`);
+    if (excerpts && excerpts.trim()) parts.push(`${EXCERPTS_INTRO}\n${excerpts.trim()}`);
+  }
   parts.push(`Rules for this hand-off (${rules.path}):\n${rules.text.trim()}`);
   return parts.join("\n\n");
 }

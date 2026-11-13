@@ -19,7 +19,8 @@ import { pickSources, SourceUnavailable } from "./src/sources.mjs";
 import { groupIssues, hashOf, issueText, compareIds, lastAt } from "./src/issue.mjs";
 import { DEFAULT_MODEL, DEFAULT_INSTRUCTION, INSTRUCTIONS, systemFor, callModel, modelInput, parseSummary, others } from "./src/triage.mjs";
 import { ACTIONS, ACTION_NAMES, HANDOFFS, ActionUnavailable, availability, newMainCommand, openTarget } from "./src/actions.mjs";
-import { gather, GatherFailed, briefText, validateBrief, DEFAULT_GATHER_INSTRUCTION, GATHER_INSTRUCTIONS, LIMITS } from "./src/gather.mjs";
+import { GatherFailed, validateBrief, DEFAULT_GATHER_INSTRUCTION, GATHER_INSTRUCTIONS, LIMITS } from "./src/gather.mjs";
+import { gather, GATHERERS, SWARM_LIMITS, COST_CAP_USD } from "./src/gatherers.mjs";
 import { issueFor, assemblePrompt, loadRules, PROJECT_RULES, DEFAULT_RULES_FILE } from "./src/handoff.mjs";
 import fs from "node:fs";
 import { defaultStateDir, storeFor } from "./src/store.mjs";
@@ -54,7 +55,14 @@ async function configFor(args) {
   const store = storeFor(stateDir, root);
   const saved = await store.read("config.json", {});
   const pick = (k, env) => (typeof args[k] === "string" ? args[k] : saved[k] ?? process.env[env] ?? null);
-  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION, rules: pick("rules", "TRIAGE_RULES"), gatherInstruction: pick("gather-instruction", "TRIAGE_GATHER_INSTRUCTION") ?? DEFAULT_GATHER_INSTRUCTION };
+  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION, rules: pick("rules", "TRIAGE_RULES"), gatherInstruction: pick("gather-instruction", "TRIAGE_GATHER_INSTRUCTION") ?? DEFAULT_GATHER_INSTRUCTION, gatherers: pick("gatherers", "TRIAGE_GATHERERS"), conversations: { mode: (pick("conversations", "TRIAGE_CONVERSATIONS") ?? "on") === "off" ? "off" : "on", dir: pick("conversations-dir", "TRIAGE_CONVERSATIONS_DIR") } };
+}
+
+/** One press of gathering, with the plan and each gatherer's state written where the sidebar can read them (`progress <id>`). */
+function gatherWith(cfg, issue, force = false) {
+  let chain = Promise.resolve();
+  const progress = (p) => (chain = chain.then(() => cfg.store.write("progress.json", { id: issue.id, at: new Date().toISOString(), ...p }).catch(() => {})));
+  return gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force, repo: cfg.repo, only: cfg.gatherers, conversations: cfg.conversations, progress }).finally(() => chain);
 }
 
 function githubRepoOf(root) {
@@ -172,7 +180,7 @@ async function view(cfg) {
     const g = gathers[item.id];
     const hash = hashOf(groupIds.map((x) => [x, byId.get(x)?.hash]));
     const s = sent[item.id];
-    return { ...item, context: g && g.issue_hash === hash ? { state: g.state, at: g.at, error: g.error ?? null, claims: g.claims ?? null, dropped: g.dropped ?? null } : { state: "none" }, sent: s ? { at: s.at, action: s.action, context: s.context?.state ?? null } : null };
+    return { ...item, context: g && g.issue_hash === hash ? { state: g.state, at: g.at, error: g.error ?? null, claims: g.claims ?? null, dropped: g.dropped ?? null, swarm: g.swarm ?? null } : { state: "none" }, sent: s ? { at: s.at, action: s.action, context: s.context?.state ?? null } : null };
   };
   let rules = null;
   try {
@@ -227,7 +235,7 @@ const lastSent = async (cfg, id) => (await cfg.store.read("sent.json", {}))[id] 
 /** `gather <id>`: the context brief as JSON, with its citations, what the check dropped, time and cost. */
 async function gatherFor(cfg, id, force) {
   const { issue } = await findIssue(cfg, id);
-  const doc = await gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force });
+  const doc = await gatherWith(cfg, issue, force);
   validateBrief(doc.brief);
   let rules;
   try {
@@ -248,21 +256,24 @@ async function handoff(cfg, id, noContext, justGathered = null) {
   const rules = loadRules({ root: cfg.root, explicit: cfg.rules });
   let context = { state: "none", key: null, ms: 0, cost_usd: 0, claims: 0, dropped: 0 };
   let brief = null;
+  let excerpts = null;
   if (!noContext) {
     let doc;
     try {
-      doc = await gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue });
+      doc = await gatherWith(cfg, issue);
     } catch (/** @type {any} */ e) {
       if (!(e instanceof GatherFailed)) throw e;
       throw new GatherFailed(`${e.message}. Nothing was sent. To send the issue and the rules without context, repeat with --no-context`);
     }
-    brief = briefText(validateBrief(doc.brief));
+    validateBrief(doc.brief);
+    brief = doc.text;
+    excerpts = doc.excerpts?.text ?? null;
     // The sidebar gathers as its own visible step, then acts: `--gathered <key>` says the brief with that key was made for this press.
     const fresh = !doc.cached || (justGathered && justGathered === doc.key);
     const made = doc.cached ? doc.first : doc;
-    context = { state: fresh ? "gathered" : "reused", key: doc.key, ms: fresh ? made.ms.total : doc.ms.total, cost_usd: fresh ? made.cost_usd : 0, claims: ["reported", "where", "tests", "unknown"].reduce((n, k) => n + doc.brief[k].length, 0), dropped: doc.brief.dropped.length };
+    context = { state: fresh ? "gathered" : "reused", key: doc.key, ms: fresh ? made.ms.total : doc.ms.total, cost_usd: fresh ? made.cost_usd : 0, claims: doc.claims, dropped: doc.brief.dropped.length, gatherers: doc.states.map((s) => `${s.label}: ${s.state}`) };
   }
-  return { g, issue, rules, context, brief, prompt: assemblePrompt({ issue: issue.text, brief, rules }) };
+  return { g, issue, rules, context, brief, prompt: assemblePrompt({ issue: issue.text, brief, excerpts, rules }) };
 }
 
 async function act(cfg, id, action, args) {
@@ -341,6 +352,8 @@ const DESCRIBE = {
     rules: `rules --root <project> [--init]: the one rules file a hand-off uses and its text: --rules <path> or config, else <project>/${PROJECT_RULES}, else the widget's own rules.md. --init copies the default to <project>/${PROJECT_RULES} so it can be edited there`,
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
     config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}] [--rules <path>] [--gather-instruction ${Object.keys(GATHER_INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
+    progress: "progress <id> --root <project>: the plan and each gatherer's state for the gather that is running or last ran: {phase: planning | gathering | none, plan [{name, label, look_for, reason}], not_started [{label, why}], states [{label, state: searching | findings | nothing | timeout | error, findings, ms}]}",
+    swarm: `gathering is a planner plus a swarm. One small-model call reads the issue and picks which gatherers start and what each looks for (${GATHERERS.map((g) => g.name).join(", ")}); code checks the plan (an unknown name is dropped, an empty plan is code only, code always runs). The chosen gatherers run in parallel, each inside ${SWARM_LIMITS.timeoutMs / 1000} s; a slow or failed one is shown as such and never blocks the hand-off. Code fetches and bounds; the small model only judges relevance; a line is kept only when it cites something code fetched. Everything outside the project is read-only (git, gh search and GETs, the npm registry, Pi session files). Cap per press: at most 6 small-model calls, $${COST_CAP_USD}; a press that reports more is flagged. Settings (config): --gatherers code,history,... (which may start), --conversations off (never read past Pi conversations), --conversations-dir <folder> (read that sessions folder instead of this project's own).`,
     describe: "this description",
   },
   actions: ACTIONS,
@@ -379,6 +392,9 @@ try {
     } else if (cmd === "gather") {
       if (!a1) throw new UsageError("gather <id>");
       out = await gatherFor(cfg, a1, !!args.force);
+    } else if (cmd === "progress") {
+      const p = await cfg.store.read("progress.json", null);
+      out = p && (!a1 || p.id === a1) ? p : { id: a1 ?? null, phase: "none", plan: [], not_started: [], states: [] };
     } else if (cmd === "prompt") {
       if (!a1) throw new UsageError("prompt <id>");
       const h = await handoff(cfg, a1, !!args["no-context"]);
@@ -390,7 +406,7 @@ try {
       out = await explain(cfg, a1);
     } else if (cmd === "config") {
       const saved = await cfg.store.read("config.json", {});
-      for (const k of ["source", "repo", "model", "instruction", "rules", "gather-instruction"]) if (typeof args[k] === "string") saved[k] = args[k];
+      for (const k of ["source", "repo", "model", "instruction", "rules", "gather-instruction", "gatherers", "conversations", "conversations-dir"]) if (typeof args[k] === "string") saved[k] = args[k];
       await cfg.store.write("config.json", saved);
       out = { root: cfg.root, config: saved };
     } else throw new UsageError(`unknown command ${cmd ?? "(none)"}; try describe`);

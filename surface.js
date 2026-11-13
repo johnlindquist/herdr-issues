@@ -54,6 +54,31 @@ export function rowStatus(item, gathering) {
   return null;
 }
 
+const STATE = (s) => (s.state === "searching" ? "searching…" : s.state === "findings" ? `${s.findings} finding${s.findings === 1 ? "" : "s"}` : s.state === "nothing" ? "nothing relevant" : s.state === "timeout" ? "timed out" : "failed");
+/** One gatherer's line: its state (and, for past conversations, that it read them and how many), its time, then the planner's reason. */
+export function gathererLine(s, reason = "") {
+  const read = s.read?.found ? ` · read ${s.read.sessions} conversation${s.read.sessions === 1 ? "" : "s"}` : "";
+  const time = s.state !== "searching" && s.ms ? ` · ${(s.ms / 1000).toFixed(1)} s` : "";
+  return `${s.label}: ${STATE(s)}${read}${time}${reason ? ` — ${reason}` : ""}`;
+}
+
+/** The plan and the gatherers' states as lines: "Planning…", then one line per chosen gatherer, then what did not start. */
+export function progressLines(p) {
+  if (!p || p.phase === "planning" || p.phase === "none" || !p.plan?.length) return ["Planning…"];
+  const out = p.plan.map((g) => gathererLine(p.states?.find((s) => s.name === g.name) ?? { label: g.label, state: "searching" }, g.reason));
+  if (p.not_started?.length) out.push(`Not started: ${p.not_started.map((g) => g.label).join(", ")}`);
+  return out;
+}
+
+/** The status lines on an issue's row: while gathering, the plan and the gatherers; afterwards the same lines and "Brief ready". */
+export function rowStatusLines(item, gathering, progress = null) {
+  if (gathering) return progressLines(progress);
+  const one = rowStatus(item, false);
+  if (!one) return [];
+  const swarm = item?.context?.state === "ready" ? item.context.swarm : null;
+  return swarm?.plan?.length ? [...progressLines({ phase: "done", ...swarm }), one] : [one];
+}
+
 /** Word wrap to a character width; a word longer than the width is cut. */
 export function wrap(text, width) {
   const out = [];
@@ -79,6 +104,7 @@ const usd = (c) => (c == null ? "cost not reported" : `$${Number(c).toFixed(4)}`
 /** "gathered in 4.2 s, $0.0031" or "reused the saved brief". */
 export function costLine(doc) {
   if (doc.cached) return `Reused the saved brief (first gathered in ${secs(doc.first?.ms?.total)}, ${usd(doc.first?.cost_usd)})`;
+  if (doc.plan) return `Gathered in ${secs(doc.ms?.total)} (planning ${secs(doc.ms?.plan)}, gatherers ${secs(doc.ms?.swarm)}), ${doc.calls} small-model calls, ${usd(doc.cost_usd)}${doc.over_cap ? ` — OVER the cap of ${usd(doc.cost_cap_usd)} per press` : ` (cap ${usd(doc.cost_cap_usd)} per press)`}`;
   return `Gathered in ${secs(doc.ms?.total)} (script ${secs(doc.ms?.collect)}, model ${secs(doc.ms?.model)}), ${usd(doc.cost_usd)}`;
 }
 
@@ -97,12 +123,24 @@ export function briefViewLines(doc, width = 44) {
   const add = (text, tone = "body", indent = "") => wrap(text, width - indent.length).forEach((l, i) => out.push({ text: (i ? indent : "") + l, tone: /** @type {any} */ (tone) }));
   add(`Context brief · ${doc.title ?? doc.id}`, "head");
   out.push({ text: "", tone: "body" });
+  if (doc.plan) {
+    add("The plan (one small model chose the gatherers):", "head");
+    for (const g of doc.plan.gatherers) add(`- ${gathererLine(doc.states?.find((s) => s.name === g.name) ?? { label: g.label, state: "searching" }, g.reason)}${g.look_for ? ` Looks for: ${g.look_for}` : ""}`, "body", "  ");
+    for (const g of doc.plan.not_started ?? []) add(`- ${g.label}: not started — ${g.why}`, "dim", "  ");
+    for (const d of doc.plan.dropped ?? []) add(`- "${d.name}" dropped from the plan: ${d.reason}`, "warn", "  ");
+    if (doc.plan.note) add(doc.plan.note, "warn");
+    const r = doc.conversations?.read;
+    if (doc.conversations?.mode === "off") add("Past conversations were not read (off for this project).", "dim");
+    else if (r?.found) add(`Read ${r.sessions} past conversation${r.sessions === 1 ? "" : "s"} in this project (${r.entries} messages; text only, redacted, nothing written).`, "dim");
+    else if (r) add("No past conversations found for this project.", "dim");
+    out.push({ text: "", tone: "body" });
+  }
   for (const line of String(doc.text ?? "").split("\n")) add(line, line.startsWith("- ") ? "body" : "head", line.startsWith("- ") ? "  " : "");
   const dropped = doc.brief?.dropped ?? [];
   if (dropped.length) {
     out.push({ text: "", tone: "body" });
     add(`Dropped by the citation check (${dropped.length}):`, "head");
-    for (const d of dropped) add(`- ${d.text} (${d.reason})`, "warn", "  ");
+    for (const d of dropped) add(`- ${d.gatherer ? `${d.gatherer}: ` : ""}${d.text} (${d.reason})`, "warn", "  ");
   }
   out.push({ text: "", tone: "body" });
   add(costLine(doc), "dim");

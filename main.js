@@ -17,7 +17,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
-import { disabledReason, legendEntries, menuItems, rowStatus, briefViewLines, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -98,7 +98,9 @@ export default class Issues extends View {
     this.viewH = null; // the list's measured height, once the pointer has been over it
     this.gathering = new Set(); // issue ids whose context is being gathered right now
     this.view = null; // the open brief: { id, doc, top }
+    this.progress = {}; // issue id -> the plan and each gatherer's state, while its context is being gathered
     this.tick(cx);
+    cx.timer.every(600, (cx) => this.poll(cx));
     cx.timer.every(3000, (cx) => this.tick(cx));
     cx.timer.every(REFRESH_MS, (cx) => this.root && this.refresh(this.root, cx, false));
     cx.spawn(async (cx) => {
@@ -139,6 +141,21 @@ export default class Issues extends View {
   }
 
   // The shown space's project: the git top level of the focused pane's folder.
+  // While a gather runs: read its plan and each gatherer's state from the helper, and show them on the row.
+  poll(cx) {
+    if (!this.gathering.size || this.polling || !this.root) return;
+    this.polling = true;
+    const root = this.root;
+    cx.spawn(async (cx) => {
+      const r = await callHelper(["progress", "--root", root], 5000);
+      this.polling = false;
+      if (r.ok?.id && this.gathering.has(r.ok.id) && r.ok.phase !== "none") {
+        this.progress[r.ok.id] = r.ok;
+        cx.notify();
+      }
+    });
+  }
+
   tick(cx) {
     const f = focused();
     const cwd = f?.cwd;
@@ -208,7 +225,7 @@ export default class Issues extends View {
 
   rowHeight(r) {
     if (r.type === "section") return H.section;
-    return (r.item.rank ? H.pressing : H.other) + (rowStatus(r.item, this.gathering.has(r.item.id)) ? H.status : 0);
+    return (r.item.rank ? H.pressing : H.other) + rowStatusLines(r.item, this.gathering.has(r.item.id), this.progress[r.item.id]).length * H.status;
   }
 
   viewport() {
@@ -309,6 +326,7 @@ export default class Issues extends View {
   // issue's state, and say what happened. Returns the brief document, or null when it failed.
   async gatherStep(id, root, cx) {
     this.gathering.add(id);
+    delete this.progress[id];
     this.notice = "Gathering context…";
     cx.notify();
     const r = await callHelper(["gather", id, "--root", root], 75_000);
@@ -383,10 +401,11 @@ export default class Issues extends View {
     const full = [item.title, item.why, `${item.id} · ${meta}`].filter(Boolean).join("\n");
     const pad = item.rank ? 23 : 0;
     const gathering = this.gathering.has(item.id);
-    const status = rowStatus(item, gathering);
+    const lines = rowStatusLines(item, gathering, this.progress[item.id]);
+    const status = lines.join("\n");
     return v_flex()
       .id(`issue-${item.id}`)
-      .h((item.rank ? H.pressing - 4 : H.other - 4) + (status ? H.status : 0))
+      .h((item.rank ? H.pressing - 4 : H.other - 4) + lines.length * H.status)
       .mx(6)
       .px(10)
       .py(6)
@@ -423,16 +442,17 @@ export default class Issues extends View {
       )
       .when(Boolean(item.why), (el) => el.child(div().pl(pad).h(36).flex_none().overflow_hidden().whitespace_normal().text_size(11.8).text_color(t.muted).child(item.why)))
       .child(div().pl(pad).flex_none().truncate().text_size(10.8).text_color(t.dim).child(`${item.id} · ${meta}`))
-      .when(Boolean(status), (el) =>
-        el.child(
+      .children(
+        lines.map((line, i) =>
           h_flex()
-            .id(`issue-status-${item.id}`)
+            .id(`issue-status-${item.id}-${i}`)
+            .h(H.status)
             .pl(pad)
             .gap(5)
             .items_center()
             .flex_none()
-            .when(gathering, (x) => x.child(svg(ICON("spinner")).size(10).spin(900).text_color(t.working)))
-            .child(div().flex_1().min_w(0).truncate().text_size(10.8).text_color(gathering ? t.working : gatherFailed(item) ? t.blocked : t.accent).child(status)),
+            .when(gathering && (/searching…/.test(line) || line === "Planning…"), (x) => x.child(svg(ICON("spinner")).size(10).spin(900).text_color(t.working)))
+            .child(div().flex_1().min_w(0).truncate().text_size(10.8).text_color(/: (failed|timed out)/.test(line) || gatherFailed(item) ? t.blocked : gathering && !/searching…|Planning…/.test(line) ? t.foreground : gathering ? t.working : i === lines.length - 1 ? t.accent : t.muted).child(line)),
         ),
       );
   }
