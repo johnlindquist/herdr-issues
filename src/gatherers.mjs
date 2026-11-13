@@ -204,7 +204,8 @@ export async function fetchGithub(ctx) {
   const searched = [];
   const have = await ctx.exec("gh", ["--version"], { timeout: 2000 });
   if (!have.ok) throw new Error("gh is not installed or not on PATH");
-  const q = ctx.terms.slice(0, 2).join(" ");
+  const words = ctx.terms.filter((t) => !ctx.terms.some((o) => o !== t && o.startsWith(t))); // "clos" is only the stem of "closed"
+  const q = words.slice(0, 2).join(" ");
   if (!q) return { items, searched: ["no distinctive terms to search GitHub for"] };
   const search = async (kind, repo, query, limit) => {
     const r = await ctx.exec("gh", ["search", kind, query, ...(repo ? ["--repo", repo] : []), "--limit", String(limit), "--json", kind === "repos" ? "fullName,description,url,stargazersCount,updatedAt" : "number,title,url,state,updatedAt,repository"]);
@@ -421,7 +422,7 @@ export const GATHERERS = [
 
 /** The planner's instruction. "PLANNER" is also how the test model tells this call apart. */
 export const planSystem = (available) => `PLANNER
-You set up a quick research swarm for one incoming issue in a software project. Each gatherer below is a small script plus a small model; they run in parallel and a senior engineer gets what they find. Starting one costs time and money, so start a gatherer only when THIS issue gives it something to find.
+You set up a quick research swarm for one incoming issue in a software project. Each gatherer below is a small script plus a small model; they run in parallel and a senior engineer gets what they find. Prefer breadth: start every gatherer that could plausibly turn up something about THIS issue, inside the project or outside it. A gatherer that finds nothing says so. Skip one only when the facts below leave it nothing to look at (for example: packages, when the files import no npm packages).
 
 GATHERERS YOU MAY START:
 ${available.map((g) => `- ${g.name}: ${g.about}`).join("\n")}
@@ -554,6 +555,16 @@ export function stateLine(s) {
 
 // ---------- one press: collect, plan, swarm, check, cache ----------
 
+/** A fact for the planner: how many past conversations this project has (file names only; nothing is opened). */
+function pastCount(dir) {
+  try {
+    const n = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length;
+    return n ? `past Pi conversations in this project: ${n}` : "this project has no past Pi conversations";
+  } catch {
+    return "this project has no past Pi conversations";
+  }
+}
+
 /** Which gatherers may start for this project: the registry, minus what a setting turned off. */
 export function availableGatherers({ only = null, conversations = "on" } = {}) {
   const names = only ? String(only).split(",").map((n) => n.trim()).filter(Boolean) : null;
@@ -601,6 +612,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
     files.length ? `files that match the issue's words: ${files.slice(0, 8).join(", ")}` : "no file in the project matches the issue's words",
     pkgs.length ? `npm packages those files import: ${pkgs.map((p) => p.name).join(", ")}` : "those files import no npm packages (only built-ins and the project's own files)",
     repo ? `the project's GitHub repository: ${repo}` : "the project has no GitHub repository of its own",
+    ...(on.some((g) => g.name === "conversations") ? [pastCount(conversations.dir || sessionsDirFor(root))] : []),
   ];
   let plan;
   let planReply = null;
