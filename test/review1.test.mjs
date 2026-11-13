@@ -177,10 +177,12 @@ test("finding 3: a named file that is a symlink out of the project is not read: 
   assert.doesNotMatch(JSON.stringify(c), /OUTSIDE-PRIVATE-SENTINEL/, "the outside file's lines were collected");
   assert.ok(c.files.some((f) => f.path === "src/bookings.ts"), "a real file inside the project is still read");
   const brief = { reported: [], where: [{ text: "x", cites: ["src/local.ts:1", "linked/private.ts:1"] }], tests: [], unknown: [], dropped: [] };
-  assert.doesNotMatch(GA.excerptsFor(brief, root).text, /OUTSIDE-PRIVATE-SENTINEL/);
+  // Even if these lines had counted as sent to the model, the real-path check refuses to read them.
+  const asSent = { reports: [], tests: [], commits: [], files: ["src/local.ts", "linked/private.ts", "src/alias.ts"].map((p) => ({ path: p, shown: [{ n: 1, text: "" }] })) };
+  assert.doesNotMatch(GA.excerptsFor(brief, root, asSent).text, /OUTSIDE-PRIVATE-SENTINEL/);
   // A symlink that stays inside the project is fine.
   fs.symlinkSync(path.join(root, "src/bookings.ts"), path.join(root, "src/alias.ts"));
-  assert.match(GA.excerptsFor({ ...brief, where: [{ text: "x", cites: ["src/alias.ts:1"] }] }, root).text, /createBooking/);
+  assert.match(GA.excerptsFor({ ...brief, where: [{ text: "x", cites: ["src/alias.ts:1"] }] }, root, asSent).text, /createBooking/);
 });
 
 test("finding 4: when a gatherer's deadline passes its model call is ended, not left running; its cost is unknown, not zero", async () => {

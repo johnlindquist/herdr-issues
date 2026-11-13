@@ -38,6 +38,7 @@ import { safePath, collect, gatherEvidence, gatherSystem, parseBrief, briefText,
  * @property {string|null} error
  * @property {string} [text]              the code gatherer's own four-part brief
  * @property {any} [brief]
+ * @property {any} [sent]              the code gatherer: exactly the evidence its model was sent
  */
 
 export const SWARM_LIMITS = { timeoutMs: 20_000, planMs: 12_000, fetchMs: 6000, items: 24, itemChars: 400, inputChars: 9000, packages: 4, upstream: 2, findings: 4, sessions: 20, sessionBytes: 4_000_000, sessionEntries: 3000, sessionItems: 14, sessionChars: 520 };
@@ -547,7 +548,7 @@ async function runCode(g, ctx) {
   const reply = await ask(ctx, gatherSystem(ctx.instruction), `${ctx.lookFor ? `LOOK FOR (from the planner): ${clip(ctx.lookFor, 240)}\n\n` : ""}${evidence.text}`);
   const brief = parseBrief(reply.text, evidence.sent, ctx.candidates); // citations are checked against what was sent, not against everything gathered
   const findings = ["reported", "where", "tests", "unknown"].flatMap((s) => brief[s]);
-  return { state: "findings", findings, dropped: brief.dropped, searched: [`${ctx.candidates.reports.length} reports, ${ctx.candidates.files.length} code files, ${ctx.candidates.tests.length} test files`, ...(evidence.cut ? [`the size limit cut the model's input: it was sent ${evidence.sent.reports.length} reports, ${evidence.sent.files.length} code files and ${evidence.sent.tests.length} test files`] : [])], fetched: ctx.candidates.files.length + ctx.candidates.tests.length + ctx.candidates.reports.length, brief, text: briefText(brief), reply };
+  return { state: "findings", findings, dropped: brief.dropped, searched: [`${ctx.candidates.reports.length} reports, ${ctx.candidates.files.length} code files, ${ctx.candidates.tests.length} test files`, ...(evidence.cut ? [`the size limit cut the model's input: it was sent ${evidence.sent.reports.length} reports, ${evidence.sent.files.length} code files and ${evidence.sent.tests.length} test files`] : [])], fetched: ctx.candidates.files.length + ctx.candidates.tests.length + ctx.candidates.reports.length, brief, sent: evidence.sent, text: briefText(brief), reply };
 }
 
 /** Fetch (code), judge (model), check (code). What was fetched is used for the check and then dropped: only kept findings leave here. */
@@ -727,11 +728,11 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
     model,
     instruction,
     plan: { gatherers: plan.gatherers, dropped: plan.dropped, note: plan.note, not_started: notStarted, ms: planMs, cost_usd: planReply?.usage?.cost_usd ?? null },
-    swarm: results.map(({ brief: _b, text: _t, ...r }) => /** @type {any} */ (r)),
+    swarm: results.map(({ brief: _b, text: _t, sent: _s, ...r }) => /** @type {any} */ (r)),
     states: results.map((r) => ({ name: r.name, label: r.label, state: r.state, findings: r.findings.length, ms: r.ms, ...(r["read"] ? { read: r["read"] } : {}), ...(r.error ? { error: r.error } : {}) })),
     brief: { ...brief, dropped },
     text: swarmText(results),
-    excerpts: excerptsFor(brief, root),
+    excerpts: excerptsFor(brief, root, code?.["sent"] ?? null), // only file lines the Code gatherer was sent and its kept claims cite
     claims,
     dropped_count: dropped.length,
     conversations: { mode: conversations.mode, read: conv?.["read"] ?? null },

@@ -461,18 +461,24 @@ export const EXCERPT = { around: 6, testAfter: 14, maxLines: 150, lineChars: 240
  * For every `path:line` a kept claim cites, the real lines from the file: the cited line(s) with
  * EXCERPT.around lines each side (for a test file: the cited line and the EXCERPT.testAfter lines
  * after it, its body). Overlaps merge; the total is bounded. The model never writes these lines,
- * so they cannot be misquoted. `read` is injectable for tests.
- * @param {Brief} brief @param {string} root @param {(rel: string) => string[]|null} [read]
+ * so they cannot be misquoted. A citation gets an excerpt only when the check that kept the claim
+ * resolved it as a file line the model was sent (`sent`: gatherEvidence().sent). A report id or a
+ * commit never does, whatever it looks like, and neither does a path that was not sent; with no
+ * `sent` nothing is read. `read` is injectable for tests.
+ * @param {Brief} brief @param {string} root @param {Candidates|null} [sent] @param {(rel: string) => string[]|null} [read]
  * @returns {{ text: string, files: { path: string, ranges: [number, number][] }[], lines: number, cut: boolean }}
  */
-export function excerptsFor(brief, root, read = (rel) => readLines(root, rel)) {
+export function excerptsFor(brief, root, sent = null, read = (rel) => readLines(root, rel)) {
   /** @type {Map<string, [number, number][]>} */
   const want = new Map();
+  if (!sent) return { text: "", files: [], lines: 0, cut: false };
+  const resolver = resolverFor(sent);
   for (const s of /** @type {const} */ (["where", "tests", "unknown"])) {
     for (const c of brief[s]) {
       for (const cite of c.cites) {
+        if (resolveCite(cite, resolver).kind !== "line") continue; // the same check that kept the claim: a report id or commit is not a file, even when it reads like path:line
         const m = /^(.+?):(\d+)(?:-(\d+))?$/.exec(cite);
-        if (!m || cite.startsWith("commit:")) continue;
+        if (!m) continue;
         const a = Number(m[2]);
         const b = Number(m[3] ?? m[2]);
         const isTest = TEST_RE.test(m[1]);
