@@ -8,8 +8,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { GATHERERS, fetchGithub, validatePlan, planSystem, runSwarm, parseFindings, swarmText, availableGatherers, sessionsDirFor, sessionTexts, redact, fetchConversations, COST_CAP_USD, SWARM_LIMITS } from "../src/gatherers.mjs";
+import { GATHERERS, fetchGithub, validatePlan, planSystem, runSwarm, parseFindings, swarmText, availableGatherers, sessionsDirFor, sessionTexts, sessionCwd, sameProject, redact, fetchConversations, COST_CAP_USD, SWARM_LIMITS } from "../src/gatherers.mjs";
 import { assemblePrompt } from "../src/handoff.mjs";
+import { redactRaw } from "../src/redact.mjs";
 import { progressLines, rowStatusLines, gathererLine, briefViewLines, costLine } from "../surface.js";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -44,12 +45,17 @@ function cli(argv, env = {}) {
   try { err = r.stderr ? JSON.parse(r.stderr.trim().split("\n").pop()) : null; } catch {}
   return { code: r.status, out, err, state, raw: r.stdout + r.stderr };
 }
-/** A sessions folder with one conversation: text, thinking, a tool call, a tool result, a system message, and secrets. */
+/** A Pi agent folder holding one conversation started in `project`: text, thinking, a tool call, a tool result, a system message, and secrets. */
 function sessions() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "swarm-sessions-"));
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "swarm-sessions-")));
+  const project = path.join(base, "app");
+  const agent = path.join(base, "agent");
+  const dir = sessionsDirFor(project, agent);
+  fs.mkdirSync(project);
+  fs.mkdirSync(dir, { recursive: true });
   const m = (role, content) => JSON.stringify({ type: "message", id: "x", timestamp: "2026-11-01T10:00:00Z", message: { role, content } });
   const lines = [
-    JSON.stringify({ type: "session", version: 3, id: "s1", cwd: "/Users/someone/dev/app" }),
+    JSON.stringify({ type: "session", version: 3, id: "s1", cwd: project }),
     m("system", "SYSTEM closed checkout"),
     m("user", [{ type: "text", text: "Closed homes must refuse checkout. My key is sk-ant-abcdefghijklmnop1234 and the file is /Users/someone/dev/app/src/bookings.ts" }]),
     m("assistant", [{ type: "thinking", thinking: "THINKING closed checkout secret-thought" }, { type: "toolCall", name: "bash", arguments: { command: "TOOLCALL closed checkout" } }, { type: "text", text: "Decision: a closed home refuses new checkout but keeps existing reservations." }]),
@@ -57,7 +63,7 @@ function sessions() {
     m("user", "We talked about lunch."),
   ];
   fs.writeFileSync(path.join(dir, "2026-11-01T10-00-00-000Z_s1.jsonl"), lines.join("\n") + "\n");
-  return dir;
+  return { agent, project, dir };
 }
 
 test("the plan is checked by code: an unknown name is dropped, a repeat is merged, Code always runs, an empty or unreadable plan is Code only", () => {
@@ -70,7 +76,9 @@ test("the plan is checked by code: an unknown name is dropped, a repeat is merge
   assert.match(validatePlan("not json", GATHERERS).note, /only Code ran/);
   // A gatherer a setting turned off cannot be planned.
   const { on, off } = availableGatherers({ conversations: "off" });
-  assert.deepEqual(off.map((g) => [g.label, g.why]), [["Past conversations", "off (project setting)"]]);
+  assert.deepEqual(off.map((g) => [g.label, g.why]), [["Past conversations", "off (the default; a project setting turns it on)"]]);
+  assert.deepEqual(availableGatherers().off.map((g) => g.name), ["conversations"], "off unless turned on");
+  assert.deepEqual(availableGatherers({ conversations: "on" }).off, []);
   assert.deepEqual(validatePlan('{"gatherers": [{"name": "conversations", "reason": "r"}]}', on).gatherers.map((g) => g.name), ["code"]);
   assert.deepEqual(availableGatherers({ only: "history" }).on.map((g) => g.name), ["code", "history"]);
   assert.deepEqual(GATHERERS.map((g) => g.name), ["code", "history", "github", "packages", "conversations"]);
@@ -113,30 +121,32 @@ test("GitHub: when gh cannot search at all, that is a named failure, not 'nothin
 });
 
 test("a finding is kept only when every citation is something code fetched", () => {
-  const items = [{ cite: "commit:abc1234", text: "x" }, { cite: "https://github.com/o/r/issues/7", text: "y" }, { cite: "session:2026-11-01T10:00#2", text: "z" }];
-  const r = parseFindings(JSON.stringify({ findings: [{ text: "real", cites: ["[commit:abc1234]"] }, { text: "url", cites: ["https://github.com/o/r/issues/7"] }, { text: "invented url", cites: ["https://github.com/o/r/issues/8"] }, { text: "no cite", cites: [] }, { text: "half real", cites: ["commit:abc1234", "commit:fffffff"] }, { text: "talk", cites: ["session:2026-11-01T10:00#2"] }] }), items);
+  const items = [{ cite: "commit:abc1234", text: "x" }, { cite: "https://github.com/o/r/issues/7", text: "y" }, { cite: "session:2026-11-01T10:00:00.000#2", text: "z" }];
+  const r = parseFindings(JSON.stringify({ findings: [{ text: "real", cites: ["[commit:abc1234]"] }, { text: "url", cites: ["https://github.com/o/r/issues/7"] }, { text: "invented url", cites: ["https://github.com/o/r/issues/8"] }, { text: "no cite", cites: [] }, { text: "half real", cites: ["commit:abc1234", "commit:fffffff"] }, { text: "talk", cites: ["session:2026-11-01T10:00:00.000#2"] }] }), items);
   assert.deepEqual(r.findings.map((f) => f.text), ["real", "url", "talk"]);
   assert.deepEqual(r.dropped.map((d) => d.reason), ["not something that was fetched: https://github.com/o/r/issues/8", "no citation", "not something that was fetched: commit:fffffff"]);
 });
 
 test("past conversations: this project's folder only; text only; redacted before a model sees it; read-only; not found is a named state", async () => {
   assert.equal(sessionsDirFor("/Users/x/dev/rentaplace", "/a"), "/a/sessions/--Users-x-dev-rentaplace--");
-  const dir = sessions();
+  const { agent, project, dir } = sessions();
   const file = path.join(dir, fs.readdirSync(dir)[0]);
   const before = [fs.readFileSync(file, "utf8"), fs.statSync(file).mtimeMs];
   const texts = sessionTexts(before[0].split("\n"));
   assert.deepEqual(texts.map((t) => [t.entry, t.role]), [[2, "user"], [3, "assistant"], [5, "user"]]);
-  assert.doesNotMatch(JSON.stringify(texts), /THINKING|TOOLCALL|TOOLOUTPUT|SYSTEM/);
-  const got = await fetchConversations({ root: "/nowhere", terms: ["closed", "checkout"], conversations: { mode: "on", dir } });
+  assert.doesNotMatch(texts.map((t) => redactRaw(t.text)).join("\n"), /THINKING|TOOLCALL|TOOLOUTPUT|SYSTEM/);
+  assert.equal(sessionCwd(before[0].split("\n")), project);
+  assert.deepEqual([sameProject(project, project), sameProject(path.dirname(project), project), sameProject(path.join(project, "sub"), project), sameProject(null, project)], [true, false, false, false]);
+  const got = await fetchConversations({ root: project, agentDir: agent, terms: ["closed", "checkout"], conversations: { mode: "on", of: null } });
   assert.deepEqual(got.read, { sessions: 1, entries: 3, found: true });
-  assert.deepEqual(got.items.map((i) => i.cite).sort(), ["session:2026-11-01T10:00#2", "session:2026-11-01T10:00#3"]);
+  assert.deepEqual(got.items.map((i) => i.cite).sort(), ["session:2026-11-01T10:00:00.000#2", "session:2026-11-01T10:00:00.000#3"]);
   const all = JSON.stringify(got);
   assert.doesNotMatch(all, /sk-ant|hunter2|\/Users\/someone|THINKING|TOOLCALL|TOOLOUTPUT|SYSTEM|lunch/);
   assert.match(all, /\[redacted\]/);
   assert.match(all, /~\/dev\/app\/src\/bookings\.ts/);
   assert.deepEqual([fs.readFileSync(file, "utf8"), fs.statSync(file).mtimeMs], before, "the session file was not written");
   assert.deepEqual(fs.readdirSync(dir).length, 1, "nothing was added to the sessions folder");
-  const none = await fetchConversations({ root: "/nowhere/at/all", terms: ["closed"], conversations: { mode: "on", dir: path.join(dir, "missing") } });
+  const none = await fetchConversations({ root: "/nowhere/at/all", agentDir: agent, terms: ["closed"], conversations: { mode: "on", of: null } });
   assert.deepEqual([none.items, none.read.found, none.searched], [[], false, ["no past Pi conversations found for this project"]]);
   // Redaction on its own.
   const r = redact("token: ghp_abcdefghijklmnopqrstuvwx1234 API_KEY=abcd1234efgh Bearer abcdefghijklmnop.qrstu mail me at jo@example.com AKIAABCDEFGHIJKLMNOP /home/jo/x.txt keep src/domain/bookings.ts and createBookingForListing");
@@ -146,14 +156,14 @@ test("past conversations: this project's folder only; text only; redacted before
 
 test("CLI: the planner's plan runs as a swarm; a failed gatherer is shown and does not block; the brief is grouped; the prompt is issue, brief, cited code, rules", () => {
   const root = project();
-  const dir = sessions();
+  const past = sessions(); // conversations of another folder, counted as this project's by an explicit setting (a clone)
   const first = cli(["refresh", "--root", root]);
   assert.equal(first.code, 0, first.raw);
   const log = path.join(first.state, "model.log");
   const env = {
-    TRIAGE_STATE: first.state, FAKE_LOG: log, TRIAGE_CONVERSATIONS_DIR: dir, FAKE_FAIL_HISTORY: "1",
+    TRIAGE_STATE: first.state, FAKE_LOG: log, PI_CODING_AGENT_DIR: past.agent, TRIAGE_CONVERSATIONS: "on", TRIAGE_CONVERSATIONS_OF: past.project, FAKE_FAIL_HISTORY: "1",
     FAKE_PLAN: JSON.stringify({ gatherers: [{ name: "code", look_for: "the closed check", reason: "reports name checkout" }, { name: "history", look_for: "earlier closed-home work", reason: "a commit names closed listings" }, { name: "conversations", look_for: "closed checkout decisions", reason: "the card asks for the expected behavior" }, { name: "bogus", reason: "x" }] }),
-    FAKE_FINDINGS_CONVERSATIONS: JSON.stringify({ findings: [{ text: "The assistant recorded a decision: a closed home refuses new checkout; may matter because the card asks for the expected behavior.", cites: ["session:2026-11-01T10:00#3"] }, { text: "Invented talk.", cites: ["session:2026-11-01T10:00#99"] }] }),
+    FAKE_FINDINGS_CONVERSATIONS: JSON.stringify({ findings: [{ text: "The assistant recorded a decision: a closed home refuses new checkout; may matter because the card asks for the expected behavior.", cites: ["session:2026-11-01T10:00:00.000#3"] }, { text: "Invented talk.", cites: ["session:2026-11-01T10:00:00.000#99"] }] }),
   };
   const g = cli(["gather", "card:closed-home", "--root", root], env);
   assert.equal(g.code, 0, g.raw);
@@ -166,7 +176,7 @@ test("CLI: the planner's plan runs as a swarm; a failed gatherer is shown and do
   const t = g.out.text;
   assert.ok(t.indexOf("CODE (") >= 0 && t.indexOf("CODE (") < t.indexOf("HISTORY (") && t.indexOf("HISTORY (") < t.indexOf("PAST CONVERSATIONS ("), t);
   assert.match(t, /HISTORY \(.*\): failed \(model down\)\. Nothing from this gatherer\./);
-  assert.match(t, /\[session:2026-11-01T10:00#3\]/);
+  assert.match(t, /\[session:2026-11-01T10:00:00\.000#3\]/);
   assert.doesNotMatch(t, /Invented talk/);
   // What each model was sent: the planner first; no gatherer saw tool output, thinking or a secret.
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -198,7 +208,7 @@ test("CLI: the planner's plan runs as a swarm; a failed gatherer is shown and do
   assert.equal(cli(["config", "--root", root, "--conversations", "off"], env).code, 0);
   const off = cli(["gather", "card:closed-home", "--root", root], env);
   assert.deepEqual(off.out.plan.gatherers.map((x) => x.name), ["code", "history"]);
-  assert.deepEqual(off.out.plan.not_started.find((n) => n.name === "conversations").why, "off (project setting)");
+  assert.deepEqual(off.out.plan.not_started.find((n) => n.name === "conversations").why, "off (the default; a project setting turns it on)");
   assert.deepEqual(off.out.conversations, { mode: "off", read: null });
   assert.match(briefViewLines(off.out, 400).map((l) => l.text).join("\n"), /Past conversations were not read \(off for this project\)\./);
 });
@@ -206,7 +216,7 @@ test("CLI: the planner's plan runs as a swarm; a failed gatherer is shown and do
 test("CLI: with no sessions folder for the project, past conversations says so and the hand-off goes on; a failed planner means Code only", () => {
   const root = project();
   const first = cli(["refresh", "--root", root]);
-  const env = { TRIAGE_STATE: first.state, FAKE_PLAN: JSON.stringify({ gatherers: [{ name: "conversations", look_for: "x", reason: "r" }] }) };
+  const env = { TRIAGE_STATE: first.state, TRIAGE_CONVERSATIONS: "on", FAKE_PLAN: JSON.stringify({ gatherers: [{ name: "conversations", look_for: "x", reason: "r" }] }) };
   const g = cli(["gather", "card:closed-home", "--root", root], env);
   assert.equal(g.code, 0, g.raw);
   assert.deepEqual(g.out.states.map((s) => [s.name, s.state]), [["code", "findings"], ["conversations", "nothing"]]);

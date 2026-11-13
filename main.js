@@ -17,7 +17,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
-import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -348,6 +348,7 @@ export default class Issues extends View {
       this.notice = why;
       return cx.notify();
     }
+    if (this.view && !viewBelongs(this.view, this.root)) this.view = null; // a brief from another project is never acted on
     if (this.gathering.has(id)) {
       this.notice = "Still gathering context for this issue…";
       return cx.notify();
@@ -358,8 +359,10 @@ export default class Issues extends View {
     cx.spawn(async (cx) => {
       if (real === "brief") {
         const b = await this.gatherStep(id, root, cx);
-        if (b) {
-          this.view = { id, doc: b, top: 0 };
+        // Only in the project it was gathered for: the sidebar may have moved on while it gathered.
+        const v = briefViewFor({ root, activeRoot: this.root, id, doc: b });
+        if (v) {
+          this.view = v;
           this.notice = costLine(b);
         }
         return cx.notify();
@@ -370,6 +373,10 @@ export default class Issues extends View {
         // Gather first, where the person can see it. A failure stops here: nothing is sent.
         const b = await this.gatherStep(id, root, cx);
         if (!b) return;
+        if (this.root !== root) {
+          this.notice = "The project changed while gathering; nothing was sent.";
+          return cx.notify();
+        }
         if (!b.cached) fresh = b.key;
         this.notice = real === "send-main" ? "Sending to Main…" : "Starting a new Main…";
         cx.notify();
@@ -515,8 +522,8 @@ export default class Issues extends View {
             .truncate()
             .text_size(10.5)
             .text_color(rules.error ? t.blocked : t.dim)
-            .tooltip(rules.error ? `${rules.error}. Hand-offs need a rules file.` : `Rules sent with every hand-off: ${rules.path}`)
-            .child(rules.error ? `Rules: missing (${rules.error})` : `Rules: ${rules.path.split("/").slice(-2).join("/")} (${rules.source})`),
+            .tooltip(`${rules.error ? `${rules.error}. Hand-offs need a rules file.` : `Rules sent with every hand-off: ${rules.path}`}${settingsLine(this.docs[this.root]) ? `\n${settingsLine(this.docs[this.root])}` : ""}`)
+            .child(`${rules.error ? `Rules: missing (${rules.error})` : `Rules: ${rules.path.split("/").slice(-2).join("/")} (${rules.source})`}${settingsLine(this.docs[this.root]) ? ` · ${settingsLine(this.docs[this.root])}` : ""}`),
         ),
       );
   }

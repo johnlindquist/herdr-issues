@@ -79,6 +79,17 @@ export function rowStatusLines(item, gathering, progress = null) {
   return swarm?.plan?.length ? [...progressLines({ phase: "done", ...swarm }), one] : [one];
 }
 
+/** A brief that finished gathering may be shown only in the project it was gathered for. The view remembers its project. */
+export function briefViewFor({ root, activeRoot, id, doc }) {
+  return doc && root === activeRoot ? { id, root, doc, top: 0 } : null;
+}
+export const viewBelongs = (view, activeRoot) => Boolean(view) && view.root === activeRoot;
+
+/** Said in the widget only while past conversations are on for the shown project. */
+export function settingsLine(doc) {
+  return doc?.conversations === "on" ? "Past conversations: on for this project (text only, redacted)" : null;
+}
+
 /** Word wrap to a character width; a word longer than the width is cut. */
 export function wrap(text, width) {
   const out = [];
@@ -135,7 +146,7 @@ export function briefViewLines(doc, width = 44) {
     for (const d of doc.plan.dropped ?? []) add(`- "${d.name}" dropped from the plan: ${d.reason}`, "warn", "  ");
     if (doc.plan.note) add(doc.plan.note, "warn");
     const r = doc.conversations?.read;
-    if (doc.conversations?.mode === "off") add("Past conversations were not read (off for this project).", "dim");
+    if (doc.conversations?.mode !== "on") add("Past conversations were not read (off for this project).", "dim");
     else if (r?.found) add(`Read ${r.sessions} past conversation${r.sessions === 1 ? "" : "s"} in this project (${r.entries} messages; text only, redacted, nothing written).`, "dim");
     else if (r) add("No past conversations found for this project.", "dim");
     out.push({ text: "", tone: "body" });

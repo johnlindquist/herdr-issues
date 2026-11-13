@@ -70,13 +70,25 @@ export function namedPaths(bodies) {
   return out;
 }
 
-const inside = (root, rel) => {
+/**
+ * The real path of a file named inside the project, or null. Both the written path and the path
+ * the filesystem resolves it to (through any symlink, of the file or of a folder on the way) must
+ * be inside the project's real root: a link that leaves the project is not read.
+ */
+export function safePath(root, rel) {
   const abs = path.resolve(root, rel);
-  return abs === root || abs.startsWith(root + path.sep) ? abs : null;
-};
+  if (abs !== root && !abs.startsWith(root + path.sep)) return null;
+  try {
+    const realRoot = fs.realpathSync(root);
+    const real = fs.realpathSync(abs);
+    return real === realRoot || real.startsWith(realRoot + path.sep) ? real : null;
+  } catch {
+    return null;
+  }
+}
 
 function readLines(root, rel) {
-  const abs = inside(root, rel);
+  const abs = safePath(root, rel);
   if (!abs) return null;
   try {
     const st = fs.statSync(abs);

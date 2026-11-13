@@ -15,7 +15,8 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { callModel } from "./triage.mjs";
 import { hashOf } from "./issue.mjs";
-import { collect, gatherInput, gatherSystem, parseBrief, briefText, excerptsFor, termsOf, GatherFailed, DEFAULT_GATHER_INSTRUCTION } from "./gather.mjs";
+import { raw, redactRaw, redact } from "./redact.mjs";
+import { safePath, collect, gatherInput, gatherSystem, parseBrief, briefText, excerptsFor, termsOf, GatherFailed, DEFAULT_GATHER_INSTRUCTION } from "./gather.mjs";
 
 /** @typedef {{ cite: string, text: string }} Item something code fetched; `cite` is how a finding points at it */
 /** @typedef {{ items: Item[], searched: string[] }} Fetched */
@@ -44,7 +45,7 @@ export const COST_CAP_USD = 0.05;
 
 // ---------- small helpers (injectable in tests through ctx.exec / ctx.fetchJson) ----------
 
-/** @param {string} cmd @param {string[]} argv @param {{ cwd?: string, timeout?: number }} [o] @returns {Promise<{ ok: boolean, out: string, err: string }>} */
+/** @param {string} cmd @param {string[]} argv @param {{ cwd?: string, timeout?: number, signal?: AbortSignal }} [o] @returns {Promise<{ ok: boolean, out: string, err: string }>} */
 export function execP(cmd, argv, o = {}) {
   return new Promise((resolve) => {
     let out = "";
@@ -56,6 +57,7 @@ export function execP(cmd, argv, o = {}) {
       return resolve({ ok: false, out: "", err: String(e) });
     }
     const timer = setTimeout(() => child.kill("SIGKILL"), o.timeout ?? SWARM_LIMITS.fetchMs);
+    if (o.signal) o.signal.aborted ? child.kill("SIGKILL") : o.signal.addEventListener("abort", () => child.kill("SIGKILL"), { once: true });
     child.stdout.on("data", (d) => (out += d).length > 2_000_000 && child.kill("SIGKILL"));
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => (clearTimeout(timer), resolve({ ok: false, out, err: String(e) })));
@@ -64,9 +66,9 @@ export function execP(cmd, argv, o = {}) {
 }
 
 /** GET a JSON document (the npm registry). Read-only. */
-export async function fetchJson(url, timeout = SWARM_LIMITS.fetchMs) {
+export async function fetchJson(url, timeout = SWARM_LIMITS.fetchMs, signal = null) {
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(timeout), headers: { accept: "application/json" } });
+    const r = await fetch(url, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout), headers: { accept: "application/json" } });
     return r.ok ? await r.json() : null;
   } catch {
     return null;
@@ -84,11 +86,11 @@ const clip = (s, n = SWARM_LIMITS.itemChars) => String(s ?? "").replace(/\s+/g, 
 
 /** npm packages the gathered code files import (bare specifiers that the project's package.json declares). */
 export function importedPackages(root, files) {
-  const pkg = parse(readText(path.join(root, "package.json")), {});
+  const pkg = parse(readText(root, "package.json"), {});
   const declared = { ...(pkg.devDependencies ?? {}), ...(pkg.dependencies ?? {}) };
   const out = new Map();
   for (const f of files) {
-    const src = readText(path.join(root, f));
+    const src = readText(root, f);
     for (const m of src.matchAll(/(?:from\s+|require\(\s*|import\s+)['"]([^'"./][^'"]*)['"]/g)) {
       const name = m[1].startsWith("@") ? m[1].split("/").slice(0, 2).join("/") : m[1].split("/")[0];
       if (declared[name] && !out.has(name)) out.set(name, { name, range: declared[name], importedBy: f });
@@ -97,8 +99,11 @@ export function importedPackages(root, files) {
   return [...out.values()].slice(0, SWARM_LIMITS.packages);
 }
 
-function readText(file) {
+/** A file inside the project, by its real path (a symlink that leaves the project reads as empty). */
+function readText(root, rel) {
   try {
+    const file = safePath(root, rel);
+    if (!file) return "";
     return fs.statSync(file).size < 3_000_000 ? fs.readFileSync(file, "utf8") : "";
   } catch {
     return "";
@@ -107,10 +112,10 @@ function readText(file) {
 
 /** The version actually installed: node_modules, else the lockfile, else unknown. */
 export function installedVersion(root, name) {
-  const nm = parse(readText(path.join(root, "node_modules", name, "package.json")), null);
+  const nm = parse(readText(root, path.join("node_modules", name, "package.json")), null);
   if (nm?.version) return { version: nm.version, from: `node_modules/${name}/package.json` };
   for (const lock of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
-    const text = readText(path.join(root, lock));
+    const text = readText(root, lock);
     if (!text) continue;
     const esc = name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
     const m = new RegExp(`(?:^|[\\s'"/])${esc}@(\\d+\\.\\d+\\.\\d+[\\w.-]*)`, "m").exec(text) ?? new RegExp(`"node_modules/${esc}":\\s*\\{\\s*"version":\\s*"([^"]+)"`).exec(text);
@@ -161,7 +166,7 @@ export async function fetchHistory(ctx) {
   if (ctx.terms.length) searched.push(`commit messages naming ${ctx.terms.slice(0, 3).map((t) => `"${t}"`).join(", ")}`);
   if (blame.length) searched.push(`git blame on ${blame.length} matching lines`);
   // Earlier cards on the board (done) that name the same terms or the same files.
-  const board = parse(readText(path.join(ctx.root, "tracker/board.json")), null);
+  const board = parse(readText(ctx.root, "tracker/board.json"), null);
   if (board) {
     const mine = new Set(ctx.issue.ids);
     for (const c of board.cards ?? []) {
@@ -249,11 +254,14 @@ export async function fetchPackages(ctx) {
   const searched = [];
   const pkgs = importedPackages(ctx.root, ctx.candidates.files.map((f) => f.path));
   if (!pkgs.length) return { items, searched: ["the gathered code imports no npm packages (only built-ins and the project's own files)"] };
+  const failed = [];
+  let answered = 0;
   await Promise.all(
     pkgs.map(async (p) => {
       const latest = await registry(ctx, p.name);
       const inst = installedVersion(ctx.root, p.name);
-      if (!latest?.version) return searched.push(`the npm registry did not answer for ${p.name}`);
+      if (!latest?.version) return failed.push(p.name);
+      answered++;
       const url = `https://registry.npmjs.org/${p.name}/latest`;
       searched.push(`${p.name}: installed against latest on the npm registry`);
       items.push({ cite: url, text: clip(`${p.name} (imported by ${p.importedBy}): package.json asks ${p.range}; installed ${inst.version ?? "not found"}${inst.from ? ` (per ${inst.from})` : ""}; latest on npm ${latest.version}${inst.version && inst.version === latest.version ? " (up to date)" : ""}`) });
@@ -268,40 +276,43 @@ export async function fetchPackages(ctx) {
       }
     }),
   );
+  // The registry answered for none of them (offline, blocked): a named failure, never "nothing relevant".
+  if (!answered) throw new Error(`the npm registry did not answer (${failed.join(", ")})`);
+  for (const name of failed) searched.push(`failed: the npm registry did not answer for ${name}`);
   return { items: items.slice(0, SWARM_LIMITS.items), searched };
 }
 
 // ---------- PAST CONVERSATIONS: this project's Pi sessions, text only, redacted, read-only ----------
+// Off unless the project's setting turns it on. Text read here is Raw (src/redact.mjs) until the one
+// line below that redacts it; nothing fetched is stored, only the findings a model kept.
 
-/** Where Pi keeps a project's sessions: <agent dir>/sessions/--<project path with / as ->--. */
+/** Where Pi keeps a project's sessions: <agent dir>/sessions/--<project path with / as ->--. Two projects can share a folder (a-b and a/b), so the folder alone proves nothing. */
 export function sessionsDirFor(root, agentDir = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), ".pi/agent")) {
   return path.join(agentDir, "sessions", `--${path.resolve(root).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
 }
 
-const SECRETS = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-  /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant|or)?[-_]?[A-Za-z0-9_-]{16,}/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
-  /\bgithub_pat_\w{20,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\bxox[abprs]-[\w-]{10,}/g,
-  /\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g,
-  /\bBearer\s+[\w.~+/=-]{12,}/gi,
-  /\b[0-9a-f]{32,}\b/gi,
-];
-/** Secrets, tokens, keys, e-mail addresses and absolute home paths out, before any model sees the text. Pure. */
-export function redact(text) {
-  let s = String(text ?? "");
-  s = s.replace(/\b((?:[\w-]*(?:password|passwd|secret|token|api[_-]?key|apikey|authorization|credential)[\w-]*))(\s*[:=]\s*)(["']?)[^\s"',;]{4,}\3/gi, "$1$2[redacted]");
-  for (const re of SECRETS) s = s.replace(re, "[redacted]");
-  // long random-looking strings (mixed case and digits, no path or word shape)
-  s = s.replace(/\b[A-Za-z0-9+_-]{32,}={0,2}/g, (m) => (/[a-z]/.test(m) && /[A-Z]/.test(m) && /\d/.test(m) ? "[redacted]" : m));
-  s = s.replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "[email]");
-  s = s.replace(/(?:\/Users|\/home)\/[^/\s"'`)]+/g, "~").replace(/[A-Z]:\\Users\\[^\\\s"']+/g, "~");
-  return s;
+export { redact };
+
+/** The folder a session file says it was started in (its header line), or null. */
+export function sessionCwd(lines) {
+  for (const line of lines.slice(0, 5)) {
+    const o = parse(line, null);
+    if (o?.type === "session") return typeof o.cwd === "string" && o.cwd ? o.cwd : null;
+  }
+  return null;
 }
 
-/** The user and assistant TEXT of one session file's lines: never tool calls, tool results, thinking or system messages. Pure. */
+const real = (p) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+/** Is this session's recorded folder the project itself? (Not a parent, not a child, not a look-alike name.) */
+export const sameProject = (cwd, project) => Boolean(cwd) && (path.resolve(cwd) === path.resolve(project) || real(cwd) === real(project));
+
+/** The user and assistant TEXT of one session file's lines, as Raw: never tool calls, tool results, thinking or system messages. */
 export function sessionTexts(lines) {
   const out = [];
   let n = 0;
@@ -313,51 +324,74 @@ export function sessionTexts(lines) {
     if (role !== "user" && role !== "assistant") continue;
     const c = o.message.content;
     const text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x) => x?.type === "text" && typeof x.text === "string").map((x) => x.text).join("\n") : "";
-    if (text.trim()) out.push({ entry: n, role, text });
+    if (text.trim()) out.push({ entry: n, role, text: raw(text) });
   }
   return out;
 }
 
-/** PAST CONVERSATIONS: this project's own Pi sessions (newest first, bounded), text only, redacted; entries that name the issue's terms. Never writes. */
+/** A citation stem per session file, unique within the folder: the start time to the millisecond, and a counter if two still collide. */
+function sessionStamps(files) {
+  const seen = new Map();
+  return files.map((f) => {
+    const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})/.exec(f);
+    const stem = m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}` : f.replace(/\.jsonl$/, "").replace(/[^\w.:-]/g, "_");
+    const n = (seen.get(stem) ?? 0) + 1;
+    seen.set(stem, n);
+    return n === 1 ? stem : `${stem}~${n}`;
+  });
+}
+
+/**
+ * PAST CONVERSATIONS: Pi sessions whose own header says they were started in this project (newest
+ * first, bounded), text only; entries that name the issue's terms. Never writes. `ctx.conversations.of`
+ * (a project setting) names another folder whose conversations count as this project's (a clone).
+ */
 export async function fetchConversations(ctx) {
-  const dir = ctx.conversations?.dir || sessionsDirFor(ctx.root);
+  const project = ctx.conversations?.of || ctx.root;
+  const dir = sessionsDirFor(project, ctx.agentDir);
   let files;
   try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().reverse().slice(0, SWARM_LIMITS.sessions);
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
   } catch {
     return { items: [], searched: ["no past Pi conversations found for this project"], read: { sessions: 0, entries: 0, found: false } };
   }
+  const stamps = sessionStamps(files);
   const terms = [...new Set([...ctx.terms, ...termsOf(ctx.lookFor ?? "", [])])].slice(0, 10);
   const hits = [];
   let entries = 0;
   let sessions = 0;
-  for (const f of files) {
-    let raw = "";
+  let skipped = 0;
+  for (let k = 0; k < files.length && sessions < SWARM_LIMITS.sessions; k++) {
+    let lines;
     try {
-      const fd = fs.openSync(path.join(dir, f), "r"); // read-only
+      const fd = fs.openSync(path.join(dir, files[k]), "r"); // read-only
       const buf = Buffer.alloc(Math.min(fs.fstatSync(fd).size, SWARM_LIMITS.sessionBytes));
       fs.readSync(fd, buf, 0, buf.length, 0);
       fs.closeSync(fd);
-      raw = buf.toString("utf8");
+      lines = buf.toString("utf8").split("\n");
     } catch {
       continue;
     }
+    // Project isolation: the session's own recorded folder, not the folder it happens to sit in.
+    if (!sameProject(sessionCwd(lines), project)) {
+      skipped++;
+      continue;
+    }
     sessions++;
-    const when = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})/.exec(f);
-    const stamp = when ? `${when[1]}T${when[2]}:${when[3]}` : f.slice(0, 16);
-    for (const e of sessionTexts(raw.split("\n")).slice(0, SWARM_LIMITS.sessionEntries)) {
+    for (const e of sessionTexts(lines).slice(0, SWARM_LIMITS.sessionEntries)) {
       entries++;
-      const text = redact(e.text);
+      const text = redactRaw(e.text); // the one door: everything below this line is redacted text
       const low = text.toLowerCase();
       const found = terms.filter((t) => low.includes(t));
       if (!found.length) continue;
       const at = Math.max(0, low.indexOf(found[0]) - 160);
-      hits.push({ score: found.length, cite: `session:${stamp}#${e.entry}`, text: clip(`${e.role === "user" ? "the person" : "the assistant"} wrote: ${at ? "…" : ""}${text.slice(at, at + SWARM_LIMITS.sessionChars)}`, SWARM_LIMITS.sessionChars + 40) });
+      hits.push({ score: found.length, cite: `session:${stamps[k]}#${e.entry}`, text: clip(`${e.role === "user" ? "the person" : "the assistant"} wrote: ${at ? "…" : ""}${text.slice(at, at + SWARM_LIMITS.sessionChars)}`, SWARM_LIMITS.sessionChars + 40) });
     }
   }
   hits.sort((a, b) => b.score - a.score);
   const items = hits.slice(0, SWARM_LIMITS.sessionItems).map(({ cite, text }) => ({ cite, text }));
-  return { items, searched: [`${sessions} past conversation${sessions === 1 ? "" : "s"} in this project (${entries} messages; text only, redacted) for ${terms.slice(0, 5).map((t) => `"${t}"`).join(", ")}`], read: { sessions, entries, found: true } };
+  if (!sessions) return { items: [], searched: [`no past Pi conversations found for this project${skipped ? ` (${skipped} in the same folder were started somewhere else and were not read)` : ""}`], read: { sessions: 0, entries: 0, found: false } };
+  return { items, searched: [`${sessions} past conversation${sessions === 1 ? "" : "s"} in this project (${entries} messages; text only, redacted) for ${terms.slice(0, 5).map((t) => `"${t}"`).join(", ")}${skipped ? `; ${skipped} in the same folder were started somewhere else and were not read` : ""}`], read: { sessions, entries, found: true } };
 }
 
 // ---------- the judging half (the small model), checked by code ----------
@@ -487,52 +521,65 @@ export function pickGatherers(names) {
   });
 }
 
+/** The model call of one gatherer: it gets what is left of the gatherer's time, and ends when the gatherer's signal fires. */
+function ask(ctx, system, input) {
+  ctx.spent.called = true; // from here on the cost is unknown unless the reply reports it
+  return callModel({ model: ctx.model, system, input, timeout: Math.max(1, ctx.deadline - Date.now()), signal: ctx.signal });
+}
+
 async function runCode(g, ctx) {
-  const reply = await callModel({ model: ctx.model, system: gatherSystem(ctx.instruction), input: `${ctx.lookFor ? `LOOK FOR (from the planner): ${clip(ctx.lookFor, 240)}\n\n` : ""}${gatherInput(ctx.issue, ctx.candidates)}`, timeout: ctx.timeoutMs });
+  const reply = await ask(ctx, gatherSystem(ctx.instruction), `${ctx.lookFor ? `LOOK FOR (from the planner): ${clip(ctx.lookFor, 240)}\n\n` : ""}${gatherInput(ctx.issue, ctx.candidates)}`);
   const brief = parseBrief(reply.text, ctx.candidates);
   const findings = ["reported", "where", "tests", "unknown"].flatMap((s) => brief[s]);
   return { state: "findings", findings, dropped: brief.dropped, searched: [`${ctx.candidates.reports.length} reports, ${ctx.candidates.files.length} code files, ${ctx.candidates.tests.length} test files`], fetched: ctx.candidates.files.length + ctx.candidates.tests.length + ctx.candidates.reports.length, brief, text: briefText(brief), reply };
 }
 
+/** Fetch (code), judge (model), check (code). What was fetched is used for the check and then dropped: only kept findings leave here. */
 async function runJudge(g, ctx) {
   const fetched = await g.fetch(ctx);
   const read = fetched.read ? { read: fetched.read } : {};
   if (!fetched.items.length) return { state: "nothing", findings: [], dropped: [], searched: fetched.searched, fetched: 0, reply: null, ...read };
-  const reply = await callModel({ model: ctx.model, system: findingsSystem(g.name), input: findingsInput(ctx.issue, fetched, ctx.lookFor), timeout: ctx.timeoutMs });
+  const reply = await ask(ctx, findingsSystem(g.name), findingsInput(ctx.issue, fetched, ctx.lookFor));
   const { findings, dropped } = parseFindings(reply.text, fetched.items);
-  return { state: findings.length ? "findings" : "nothing", findings, dropped, searched: fetched.searched, fetched: fetched.items.length, items: fetched.items, reply, ...read };
+  return { state: findings.length ? "findings" : "nothing", findings, dropped, searched: fetched.searched, fetched: fetched.items.length, reply, ...read };
 }
 
 /**
  * Run the gatherers in parallel, each inside its own time box. Never throws: every gatherer ends in
- * one of the four states. `onState` is called whenever one changes (the sidebar shows it).
+ * one of the four states. Each gatherer has ONE deadline for its fetching and its model call
+ * together; when it passes, its commands, requests and model process are ended (not left running)
+ * and it is reported as timed out. `onState` is called whenever one changes (the sidebar shows it).
  * @param {any} o
  * @returns {Promise<GathererResult[]>}
  */
-export async function runSwarm({ root, issue, candidates, model, instruction, repo = null, gatherers = GATHERERS, plan = null, conversations = null, timeoutMs = SWARM_LIMITS.timeoutMs, exec = execP, fetchJson: fj = fetchJson, onState = () => {} }) {
+export async function runSwarm({ root, issue, candidates, model, instruction, repo = null, gatherers = GATHERERS, plan = null, conversations = null, agentDir = undefined, timeoutMs = SWARM_LIMITS.timeoutMs, exec = execP, fetchJson: fj = fetchJson, onState = () => {} }) {
   if (plan) gatherers = /** @type {any} */ (plan.map((p) => GATHERERS.find((g) => g.name === p.name)).filter(Boolean));
   const lookFor = (name) => plan?.find((p) => p.name === name)?.look_for ?? "";
   const titleTerms = termsOf(issue.title, []);
   const terms = candidates.terms.length ? [...new Set([...titleTerms.filter((t) => candidates.terms.includes(t)), ...candidates.terms])] : titleTerms;
-  const ctx = { root, issue, candidates, model, instruction, repo, terms, titleTerms, timeoutMs, exec, fetchJson: fj, conversations };
+  const shared = { root, issue, candidates, model, instruction, repo, terms, titleTerms, timeoutMs, conversations, agentDir };
   const states = gatherers.map((g) => ({ name: g.name, label: g.label, state: "searching", findings: 0, ms: 0 }));
   onState(states);
   const t0 = Date.now();
   return Promise.all(
     gatherers.map(async (g, i) => {
       const base = { name: g.name, label: g.label, outside: g.outside, findings: [], dropped: [], searched: [], fetched: 0, cost_usd: null, tokens: null, error: null };
+      const stop = new AbortController();
+      const spent = { called: false };
+      const own = { ...shared, lookFor: lookFor(g.name), signal: stop.signal, deadline: t0 + timeoutMs, spent, exec: (cmd, argv, o = {}) => exec(cmd, argv, { ...o, signal: stop.signal }), fetchJson: (url) => fj(url, undefined, stop.signal) };
       let timer;
       /** @type {any} */
       let r;
       try {
-        const own = { ...ctx, lookFor: lookFor(g.name) };
         r = await Promise.race([g.fetch ? runJudge(g, own) : runCode(g, own), new Promise((res) => (timer = setTimeout(() => res({ state: "timeout", error: `no answer in ${Math.round(timeoutMs / 1000)} s` }), timeoutMs)))]);
       } catch (/** @type {any} */ e) {
         r = { state: "error", error: String(e?.message || e).slice(0, 200) };
       }
       clearTimeout(timer);
+      stop.abort(); // whatever this gatherer still has running ends here
       const { reply, ...rest } = r;
-      const out = { ...base, ...rest, ms: Date.now() - t0, cost_usd: reply?.usage?.cost_usd ?? (reply ? null : 0), tokens: reply?.usage ? { input: reply.usage.input, output: reply.usage.output } : null };
+      // Cost: what the reply reported; unknown (null) when a model call was started and no usage came back; $0 only when no model was asked.
+      const out = { ...base, ...rest, ms: Date.now() - t0, cost_usd: reply?.usage?.cost_usd ?? (spent.called ? null : 0), tokens: reply?.usage ? { input: reply.usage.input, output: reply.usage.output } : null };
       states[i] = { name: g.name, label: g.label, state: out.state, findings: out.findings.length, ms: out.ms, ...(out.read ? { read: out.read } : {}), ...(out.error ? { error: out.error } : {}) };
       onState(states);
       return out;
@@ -569,19 +616,19 @@ export function stateLine(s) {
 function pastCount(dir) {
   try {
     const n = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length;
-    return n ? `past Pi conversations in this project: ${n}` : "this project has no past Pi conversations";
+    return n ? `past Pi conversations on file for this project's folder: ${n}` : "this project has no past Pi conversations";
   } catch {
     return "this project has no past Pi conversations";
   }
 }
 
 /** Which gatherers may start for this project: the registry, minus what a setting turned off. */
-export function availableGatherers({ only = null, conversations = "on" } = {}) {
+export function availableGatherers({ only = null, conversations = "off" } = {}) {
   const names = only ? String(only).split(",").map((n) => n.trim()).filter(Boolean) : null;
   const off = [];
   const on = [];
   for (const g of GATHERERS) {
-    if (g.name === "conversations" && conversations === "off") off.push({ name: g.name, label: g.label, why: "off (project setting)" });
+    if (g.name === "conversations" && conversations !== "on") off.push({ name: g.name, label: g.label, why: "off (the default; a project setting turns it on)" });
     else if (names && g.name !== "code" && !names.includes(g.name)) off.push({ name: g.name, label: g.label, why: "off (project setting)" });
     else on.push(g);
   }
@@ -593,14 +640,14 @@ export function availableGatherers({ only = null, conversations = "on" } = {}) {
  * in its own time box; code checks every citation. Returns the brief document. Throws GatherFailed
  * only when no gatherer at all returned (then nothing is sent unless the person chooses to).
  * `progress(p)` is called as the plan and each gatherer's state change (the sidebar shows them).
- * @param {{ root: string, store: any, model: string, instruction?: string, issue: any, force?: boolean, repo?: string|null, only?: string|null, conversations?: { mode: string, dir: string|null }, exec?: typeof execP, fetchJson?: typeof fetchJson, timeoutMs?: number, progress?: (p: any) => void }} o
+ * @param {{ root: string, store: any, model: string, instruction?: string, issue: any, force?: boolean, repo?: string|null, only?: string|null, conversations?: { mode: string, of: string|null }, agentDir?: string, exec?: typeof execP, fetchJson?: typeof fetchJson, timeoutMs?: number, progress?: (p: any) => void }} o
  */
-export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "on", dir: null }, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, progress = () => {} }) {
+export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "off", of: null }, agentDir = undefined, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, progress = () => {} }) {
   const t0 = Date.now();
   const candidates = collect({ root, title: issue.title, reports: issue.reports });
   const { ms: collectMs, ...stable } = candidates;
   const { on, off } = availableGatherers({ only, conversations: conversations.mode });
-  const key = hashOf({ v: 3, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations });
+  const key = hashOf({ v: 4, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations });
   const index = await store.read("gathers.json", {});
   const record = async (entry) => {
     index[issue.id] = { ...entry, issue_hash: issue.hash, key, at: new Date().toISOString() };
@@ -622,7 +669,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
     files.length ? `files that match the issue's words: ${files.slice(0, 8).join(", ")}` : "no file in the project matches the issue's words",
     pkgs.length ? `npm packages those files import (their latest versions and release notes can be checked): ${pkgs.map((p) => p.name).join(", ")}` : "those files import no npm packages (only built-ins and the project's own files)",
     repo ? `the project's GitHub repository (its issues and pull requests can be searched, and so can the imported packages' repositories): ${repo}` : "the project has no GitHub repository of its own",
-    ...(on.some((g) => g.name === "conversations") ? [pastCount(conversations.dir || sessionsDirFor(root))] : []),
+    ...(on.some((g) => g.name === "conversations") ? [pastCount(sessionsDirFor(conversations.of || root, agentDir))] : []),
   ];
   let plan;
   let planReply = null;
@@ -637,7 +684,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   const planMs = Date.now() - tp;
   const notStarted = [...on.filter((g) => !plan.gatherers.some((p) => p.name === g.name)).map((g) => ({ name: g.name, label: g.label, why: "the planner did not choose it for this issue" })), ...off];
   // 2. The swarm.
-  const results = await runSwarm({ root, issue, candidates, model, instruction, repo, plan: plan.gatherers, conversations, timeoutMs, exec, fetchJson: fj, onState: (states) => progress({ phase: "gathering", plan: plan.gatherers, not_started: notStarted, note: plan.note, states: states.map((s) => ({ ...s })) }) });
+  const results = await runSwarm({ root, issue, candidates, model, instruction, repo, plan: plan.gatherers, conversations, agentDir, timeoutMs, exec, fetchJson: fj, onState: (states) => progress({ phase: "gathering", plan: plan.gatherers, not_started: notStarted, note: plan.note, states: states.map((s) => ({ ...s })) }) });
   const swarmMs = Date.now() - tp - planMs;
   const costs = [planReply?.usage?.cost_usd, ...results.map((r) => r.cost_usd)];
   const cost = costs.some((c) => typeof c === "number") ? costs.reduce((n, c) => n + (typeof c === "number" ? c : 0), 0) : null;
