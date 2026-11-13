@@ -666,7 +666,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   const candidates = collect({ root, title: issue.title, reports: issue.reports });
   const { ms: collectMs, ...stable } = candidates;
   const { on, off } = availableGatherers({ only, conversations: conversations.mode });
-  const key = hashOf({ v: 4, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations });
+  const key = hashOf({ v: 5, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations });
   const index = await store.read("gathers.json", {});
   const record = async (entry) => {
     index[issue.id] = { ...entry, issue_hash: issue.hash, key, at: new Date().toISOString() };
