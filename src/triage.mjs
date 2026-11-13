@@ -50,7 +50,7 @@ export function systemFor(name = DEFAULT_INSTRUCTION) {
 // ---------- the model call (swappable: TRIAGE_MODEL_CMD) ----------
 
 /** @param {string} cmd @param {string[]} argv @param {string} input @param {number} timeout */
-function runProcess(cmd, argv, input, timeout) {
+function runProcess(cmd, argv, input, timeout, signal = null) {
   return new Promise((resolve) => {
     const child = spawn(cmd, argv, { env: { ...process.env, PI_NO_TITLE: "1" }, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -59,6 +59,13 @@ function runProcess(cmd, argv, input, timeout) {
       child.kill("SIGKILL");
       stderr += `\n[timeout after ${timeout}ms]`;
     }, timeout);
+    if (signal) {
+      const end = () => {
+        child.kill("SIGKILL");
+        stderr += "\n[cancelled]";
+      };
+      signal.aborted ? end() : signal.addEventListener("abort", end, { once: true });
+    }
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (e) => {
@@ -78,13 +85,13 @@ function runProcess(cmd, argv, input, timeout) {
  * argv array) replaces Pi: it gets {"model","system","input"} on stdin and prints the reply.
  * @returns {Promise<ModelReply>}
  */
-export async function callModel({ model, system, input, timeout = 90_000 }) {
+export async function callModel({ model, system, input, timeout = 90_000, signal = null }) {
   const t0 = Date.now();
   const custom = process.env.TRIAGE_MODEL_CMD;
   if (custom) {
     const argv = JSON.parse(custom);
     if (!Array.isArray(argv) || !argv.length || argv.some((x) => typeof x !== "string")) throw new Error("TRIAGE_MODEL_CMD must be a JSON array of strings");
-    const r = await runProcess(argv[0], argv.slice(1), JSON.stringify({ model, system, input }), timeout);
+    const r = await runProcess(argv[0], argv.slice(1), JSON.stringify({ model, system, input }), timeout, signal);
     if (r.code !== 0) throw new Error((r.stderr.trim().split("\n").pop() || `model command exited ${r.code}`).slice(0, 200));
     return { text: r.stdout, ms: Date.now() - t0, usage: null };
   }
@@ -93,6 +100,7 @@ export async function callModel({ model, system, input, timeout = 90_000 }) {
     ["-p", "--mode", "json", "--no-session", "-ne", "-nt", "-ns", "-np", "-nc", "--no-mcp", "--no-themes", "--thinking", "off", "--model", model, "--system-prompt", system],
     input,
     timeout,
+    signal,
   );
   if (r.code !== 0) throw new Error((r.stderr.trim().split("\n").pop() || `pi exited ${r.code}`).slice(0, 200));
   let last = null;

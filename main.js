@@ -7,11 +7,17 @@
 // Keys: ⌘I (global, keys.json "triage.focus") gives Issues the keyboard; Esc gives it back.
 // Inside: the shared navigation rules in nav.js (↑↓ Home End PgUp PgDn, Tab, −), plus the action
 // keys from src/actions.mjs. Every control has a tooltip "Action (Key)".
+//
+// Hand-offs (M: Send to Main, N: New Main) gather context first: the row says "Gathering context…",
+// then the helper sends the issue, the cited brief and the rules. B shows the brief and what was
+// sent. A failed gather is a named state on the row; ⇧M / ⇧N then send without context, on purpose.
+// What the legend, menu and brief view say comes from surface.js (plain data, tested in Node).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
+import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -34,7 +40,7 @@ const windowHeight = () => {
 const REFRESH_MS = 2 * 60_000; // cheap when nothing changed: the model is only asked about changed issues
 // Fixed row heights: the virtual list places rows by these, so rows clip their text to fit
 // (the full text is in the row's tooltip, Copy and the right-click menu).
-const H = { section: 28, pressing: 96, other: 60 };
+const H = { section: 28, pressing: 96, other: 60, status: 18, line: 16 };
 
 /** One call to the helper; JSON in, JSON out. */
 async function callHelper(argv, timeout = 120_000) {
@@ -66,26 +72,15 @@ function ago(iso) {
 // Pi titles its terminal "π - <session name> - <folder>".
 const sessionName = (x) => (x ?? "").replace(/^π\s*-\s*/, "").replace(/\s+-\s+[^-]+$/, "").trim();
 
-/** The space's Main (a Pi named Main, else its first Pi) and Fixer (an agent named Fixer). */
+/** The space's Main: a Pi named Main, else its first Pi. */
 function targetsIn(space) {
   const here = agents().filter((a) => a.space === space);
   const pis = here.filter((a) => a.app === "pi");
   const main = pis.find((a) => /^main$/i.test(sessionName(a.title))) ?? pis.slice().sort((x, y) => x.tab_index - y.tab_index)[0] ?? null;
-  const fixer = here.find((a) => /fixer/i.test(sessionName(a.title)) || /fixer/i.test(a.tab_name ?? "")) ?? null;
-  return { main: main?.address ?? null, mainPane: main?.pane ?? null, fixer: fixer?.address ?? null };
+  return { main: main?.address ?? null, mainPane: main?.pane ?? null };
 }
 
-/** Same rules as src/actions.mjs availability(), for drawing; the helper re-checks on act. */
-function disabledReason(action, item, targets) {
-  if (!item) return "Select an issue first";
-  if (action === "send-main" && !targets.main) return "No Main conversation in this space";
-  if (action === "fixer" && !targets.fixer) return "No Fixer agent in this space";
-  if (action === "open" && !item.url && item.kind !== "board") return "Lives in the app database: no page to open";
-  return null;
-}
-
-const LONG = { Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Main: "Send to Main", New: "New Main from this", Fixer: "Hand to Fixer: sends the issue only", Open: "Open source" };
-const SHORT = { "send-main": "Main", "new-main": "New", fixer: "Fixer", open: "Open" };
+const LONG = { Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Close: "Close the brief", Scroll: "Scroll the brief" };
 const KIND = { github: "GitHub", inbox: "Support", feedback: "Feedback", board: "Tracker" };
 
 export default class Issues extends View {
@@ -101,7 +96,11 @@ export default class Issues extends View {
     this.handle = cx.focus_handle();
     this.top = 0; // first list row shown (the list windows itself: see nav.js)
     this.viewH = null; // the list's measured height, once the pointer has been over it
+    this.gathering = new Set(); // issue ids whose context is being gathered right now
+    this.view = null; // the open brief: { id, doc, top }
+    this.progress = {}; // issue id -> the plan and each gatherer's state, while its context is being gathered
     this.tick(cx);
+    cx.timer.every(600, (cx) => this.poll(cx));
     cx.timer.every(3000, (cx) => this.tick(cx));
     cx.timer.every(REFRESH_MS, (cx) => this.root && this.refresh(this.root, cx, false));
     cx.spawn(async (cx) => {
@@ -142,6 +141,21 @@ export default class Issues extends View {
   }
 
   // The shown space's project: the git top level of the focused pane's folder.
+  // While a gather runs: read its plan and each gatherer's state from the helper, and show them on the row.
+  poll(cx) {
+    if (!this.gathering.size || this.polling || !this.root) return;
+    this.polling = true;
+    const root = this.root;
+    cx.spawn(async (cx) => {
+      const r = await callHelper(["progress", "--root", root], 5000);
+      this.polling = false;
+      if (r.ok?.id && this.gathering.has(r.ok.id) && r.ok.phase !== "none") {
+        this.progress[r.ok.id] = r.ok;
+        cx.notify();
+      }
+    });
+  }
+
   tick(cx) {
     const f = focused();
     const cwd = f?.cwd;
@@ -160,6 +174,7 @@ export default class Issues extends View {
     this.space = f.space;
     if (!root || root === this.root) return;
     this.root = root;
+    this.view = null;
     this.load(root, cx);
     cx.notify();
   }
@@ -203,13 +218,19 @@ export default class Issues extends View {
     ];
   }
 
+  // The issue actions are about: the open brief's issue while a brief is open (clicked or typed), else the selection.
+  actionItem(doc) {
+    return actionItem({ view: this.view, items: this.items(doc), selected: this.selectedItem(doc) });
+  }
+
   selectedItem(doc) {
     const list = this.items(doc);
     return list.find((x) => x.id === this.selected[this.root]) ?? list[0] ?? null;
   }
 
   rowHeight(r) {
-    return r.type === "section" ? H.section : r.item.rank ? H.pressing : H.other;
+    if (r.type === "section") return H.section;
+    return (r.item.rank ? H.pressing : H.other) + rowStatusLines(r.item, this.gathering.has(r.item.id), this.progress[r.item.id]).length * H.status;
   }
 
   viewport() {
@@ -230,6 +251,19 @@ export default class Issues extends View {
   command(k, cx) {
     const doc = this.docs[this.root];
     const list = this.items(doc);
+    if (this.view && !this.collapsed) {
+      // The brief is open: Esc or B closes it, the list keys scroll it, M and N still hand over.
+      if (k === "escape" || k === "b") {
+        this.view = null;
+        return true;
+      }
+      const lines = this.viewLines();
+      const next = step(this.view.top, Math.max(1, lines.length), k);
+      if (next != null) {
+        this.view.top = Math.min(next, Math.max(0, lines.length - 3));
+        return true;
+      }
+    }
     if (k === "escape") {
       this.giveBack();
       return true;
@@ -249,23 +283,64 @@ export default class Issues extends View {
     }
     if (this.collapsed) return false;
     if (k === "shift-f10" || k === "menu-key") {
-      const item = this.selectedItem(doc);
+      const item = this.actionItem(doc);
       if (item) this.menu(item);
       return true;
     }
     const at = Math.max(0, list.findIndex((x) => x.id === this.selectedItem(doc)?.id));
-    const next = step(at, list.length, k);
+    const next = this.view ? null : step(at, list.length, k);
     if (next != null) {
       this.selected[this.root] = list[next].id;
       this.notice = null;
       this.reveal(doc);
       return true;
     }
+    const item = this.actionItem(doc); // with a brief open: the issue it shows, or none
+    const bare = BARE.find((b) => b.key === k || b.keyLabel === k || (k === b.key.slice(-1).toUpperCase()));
+    if (bare && item) {
+      if (!gatherFailed(item)) this.notice = "Sending without context is offered only after gathering failed. M and N gather first.";
+      else this.act(item.id, bare.name, cx);
+      return true;
+    }
     const a = (doc?.actions ?? []).find((x) => x.key === k);
-    const item = this.selectedItem(doc);
     if (!a || !item) return false;
     this.act(item.id, a.name, cx);
     return true;
+  }
+
+  viewLines() {
+    return this.view ? briefViewLines(this.view.doc, this.chars()) : [];
+  }
+
+  // How many characters fit on a line of the brief view (the panel's width, when the layout says it).
+  chars() {
+    let px = 320;
+    const walk = (n, w) => {
+      if (!n) return;
+      const mine = n.size?.px ?? w;
+      if (n.content?.mod === NAME && mine) px = mine;
+      (n.children ?? []).forEach((c) => walk(c, mine));
+    };
+    try {
+      walk(layout(), null);
+    } catch {}
+    return Math.max(28, Math.floor((px - 30) / 6.0));
+  }
+
+  // One step of a hand-off or a brief view: gather the context (the row says so), reload the
+  // issue's state, and say what happened. Returns the brief document, or null when it failed.
+  async gatherStep(id, root, cx) {
+    this.gathering.add(id);
+    delete this.progress[id];
+    this.notice = "Gathering context…";
+    cx.notify();
+    const r = await callHelper(["gather", id, "--root", root], 75_000);
+    this.gathering.delete(id);
+    const shown = await callHelper(["show", "--root", root], 15_000);
+    if (shown.ok) this.docs[root] = shown.ok;
+    if (!r.ok) this.notice = `Couldn't gather context: ${r.error}`.slice(0, 220);
+    cx.notify();
+    return r.ok ?? null;
   }
 
   act(id, action, cx) {
@@ -278,16 +353,49 @@ export default class Issues extends View {
       this.notice = why;
       return cx.notify();
     }
-    const terminal = action === "send-main" ? targets.main : action === "fixer" ? targets.fixer : null;
+    if (this.view && !viewBelongs(this.view, this.root)) this.view = null; // a brief from another project is never acted on
+    if (this.gathering.has(id)) {
+      this.notice = "Still gathering context for this issue…";
+      return cx.notify();
+    }
+    const bare = BARE.find((b) => b.name === action);
+    const real = bare ? bare.of : action;
+    const terminal = real === "send-main" ? targets.main : null;
     cx.spawn(async (cx) => {
-      const r = await callHelper(["act", id, action, "--root", root, ...(terminal ? ["--terminal", terminal] : [])], 30_000);
+      if (real === "brief") {
+        const b = await this.gatherStep(id, root, cx);
+        // Only in the project it was gathered for: the sidebar may have moved on while it gathered.
+        const v = briefViewFor({ root, activeRoot: this.root, id, doc: b });
+        if (v) {
+          this.view = v;
+          this.notice = costLine(b);
+        }
+        return cx.notify();
+      }
+      const handoff = real === "send-main" || real === "new-main";
+      let fresh = null; // the key of a brief gathered in this press (not one reused from before)
+      if (handoff && !bare) {
+        // Gather first, where the person can see it. A failure stops here: nothing is sent.
+        const b = await this.gatherStep(id, root, cx);
+        if (!b) return;
+        if (this.root !== root) {
+          this.notice = "The project changed while gathering; nothing was sent.";
+          return cx.notify();
+        }
+        if (!b.cached) fresh = b.key;
+        this.notice = real === "send-main" ? "Sending to Main…" : "Starting a new Main…";
+        cx.notify();
+      }
+      const r = await callHelper(["act", id, real, "--root", root, ...(terminal ? ["--terminal", terminal] : []), ...(bare ? ["--no-context"] : []), ...(fresh ? ["--gathered", fresh] : [])], 75_000);
       if (!r.ok) this.notice = r.error;
-      else if (action === "new-main") {
-        run(r.ok.command.name, r.ok.command.args); // a new space with Pi, its first message the issue
-        this.notice = "Started a new Main for it";
+      else if (handoff) {
+        if (real === "new-main") run(r.ok.command.name, r.ok.command.args); // a new space with Pi, its first message the prompt
+        this.notice = sentNotice(r.ok);
+        if (this.view?.id === id) this.view = { ...this.view, doc: { ...this.view.doc, last_sent: { at: r.ok.at, action: real, context: r.ok.context, prompt: r.ok.prompt } } };
+        this.load(root, cx);
       } else {
-        this.notice = { copy: "Copied", "send-main": "Sent to Main", fixer: "Handed to the Fixer", open: "Opened", dismiss: "Dismissed", restore: "Restored" }[action];
-        if (action === "dismiss" || action === "restore") this.load(root, cx);
+        this.notice = { copy: "Copied", open: "Opened", dismiss: "Dismissed", restore: "Restored" }[real];
+        if (real === "dismiss" || real === "restore") this.load(root, cx);
       }
       cx.notify();
     });
@@ -296,10 +404,7 @@ export default class Issues extends View {
   menu(item) {
     const targets = targetsIn(this.space);
     const actions = this.docs[this.root]?.actions ?? [];
-    const items = actions.map((a) => {
-      const reason = disabledReason(a.name, item, targets);
-      return { label: reason ? `${a.label} — ${reason}` : `${a.label}   ${a.keyLabel}`, action: reason ? "noop" : a.name, args: { id: item.id }, sep: a.name === "dismiss", danger: a.name === "dismiss" };
-    });
+    const items = menuItems(actions, item, targets);
     openOverlay({ mod: "triage-menu", kind: "popup", width: 320, height: 12 + items.length * 31 + 9 + 24, props: { owner: "triage", title: `Issues · ${item.title}`, items } });
   }
 
@@ -307,9 +412,12 @@ export default class Issues extends View {
     const meta = [KIND[item.kind] ?? item.kind, item.count > 1 ? `${item.count} reports` : null, item.merged?.length ? `+ ${item.merged.map((m) => m.id).join(", ")}` : null].filter(Boolean).join(" · ");
     const full = [item.title, item.why, `${item.id} · ${meta}`].filter(Boolean).join("\n");
     const pad = item.rank ? 23 : 0;
+    const gathering = this.gathering.has(item.id);
+    const lines = rowStatusLines(item, gathering, this.progress[item.id]);
+    const status = lines.join("\n");
     return v_flex()
       .id(`issue-${item.id}`)
-      .h(item.rank ? H.pressing - 4 : H.other - 4)
+      .h((item.rank ? H.pressing - 4 : H.other - 4) + lines.length * H.status)
       .mx(6)
       .px(10)
       .py(6)
@@ -321,7 +429,7 @@ export default class Issues extends View {
       .border_color(selected ? t.accent : t.chrome)
       .when(selected, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
-      .tooltip(`${full}\n\nRight-click or ⇧F10 for actions`)
+      .tooltip(`${full}${status ? `\n${status}` : ""}\n\nRight-click or ⇧F10 for actions`)
       .on_mouse_down("left", (_e, cx) => {
         this.selected[this.root] = item.id;
         if (!this.handle.is_focused()) {
@@ -345,7 +453,20 @@ export default class Issues extends View {
           .child(div().flex_1().min_w(0).truncate().text_size(12.8).font_medium().text_color(t.foreground).child(item.title)),
       )
       .when(Boolean(item.why), (el) => el.child(div().pl(pad).h(36).flex_none().overflow_hidden().whitespace_normal().text_size(11.8).text_color(t.muted).child(item.why)))
-      .child(div().pl(pad).flex_none().truncate().text_size(10.8).text_color(t.dim).child(`${item.id} · ${meta}`));
+      .child(div().pl(pad).flex_none().truncate().text_size(10.8).text_color(t.dim).child(`${item.id} · ${meta}`))
+      .children(
+        lines.map((line, i) =>
+          h_flex()
+            .id(`issue-status-${item.id}-${i}`)
+            .h(H.status - 2)
+            .pl(pad)
+            .gap(5)
+            .items_center()
+            .flex_none()
+            .when(gathering && (/searching…/.test(line) || line === "Planning…"), (x) => x.child(svg(ICON("spinner")).size(10).spin(900).text_color(t.working)))
+            .child(div().flex_1().min_w(0).truncate().text_size(10.8).text_color(/: (failed|timed out)/.test(line) || gatherFailed(item) ? t.blocked : gathering && !/searching…|Planning…/.test(line) ? t.foreground : gathering ? t.working : i === lines.length - 1 ? t.accent : t.muted).child(line)),
+        ),
+      );
   }
 
   legend(t, item) {
@@ -362,7 +483,28 @@ export default class Issues extends View {
         .when(Boolean(onClick) && !reason, (el) => el.on_click((_e, cx) => onClick(cx)))
         .child(div().px(4).rounded(3).border(1).border_color(t.border).text_size(10).text_color(t.foreground).child(k))
         .child(div().text_size(10.5).text_color(t.dim).child(label));
-    const reasons = actions.map((a) => [a, disabledReason(a.name, item, targets)]);
+    // An action key: its words and tooltip come from surface.js.
+    const entry = (e) =>
+      h_flex()
+        .id(`legend-${e.action}`)
+        .gap(4)
+        .items_center()
+        .cursor_pointer()
+        .tooltip(e.tooltip)
+        .when(e.disabled, (el) => el.opacity(0.4))
+        .when(!e.disabled, (el) => el.on_click((_e, cx) => item && this.act(item.id, e.action, cx)))
+        .child(div().px(4).rounded(3).border(1).border_color(t.border).text_size(10).text_color(t.foreground).child(e.key))
+        .child(div().text_size(10.5).text_color(t.dim).child(e.label));
+    const rules = this.docs[this.root]?.rules;
+    const second = this.view
+      ? [key("scroll", "↑↓", "Scroll", null, null), key("close", "B / Esc", "Close", null, (cx) => ((this.view = null), cx.notify()))]
+      : [
+          key("sel", "↑↓", "Select", null, null),
+          key("tab", "Tab", "Next", null, null),
+          key("col", "−", "Collapse", null, () => this.setCollapsed(true)),
+          key("esc", "Esc", "Back", null, () => this.giveBack()),
+          key("ref", "R", "Refresh", null, (cx) => this.root && this.refresh(this.root, cx, true)),
+        ];
     return v_flex()
       .flex_none()
       .px(12)
@@ -375,19 +517,40 @@ export default class Issues extends View {
           .gap_x(8)
           .gap_y(3)
           .flex_wrap()
-          .children(reasons.map(([a, r]) => key(a.name, a.keyLabel, SHORT[a.name] ?? a.label, r, (cx) => item && this.act(item.id, a.name, cx)))),
+          .children(legendEntries(actions, item, targets).filter((e) => !(this.view && e.action === "brief")).map((e) => entry(e))),
       )
-      .child(
-        h_flex()
-          .gap_x(8)
-          .gap_y(3)
-          .flex_wrap()
-          .child(key("sel", "↑↓", "Select", null, null))
-          .child(key("tab", "Tab", "Next", null, null))
-          .child(key("col", "−", "Collapse", null, () => this.setCollapsed(true)))
-          .child(key("esc", "Esc", "Back", null, () => this.giveBack()))
-          .child(key("ref", "R", "Refresh", null, (cx) => this.root && this.refresh(this.root, cx, true))),
+      .child(h_flex().gap_x(8).gap_y(3).flex_wrap().children(second))
+      .when(Boolean(rules), (el) =>
+        el.child(
+          div()
+            .id("issues-rules")
+            .truncate()
+            .text_size(10.5)
+            .text_color(rules.error ? t.blocked : t.dim)
+            .tooltip(`${rules.error ? `${rules.error}. Hand-offs need a rules file.` : `Rules sent with every hand-off: ${rules.path}`}${settingsLine(this.docs[this.root]) ? `\n${settingsLine(this.docs[this.root])}` : ""}`)
+            .child(`${rules.error ? `Rules: missing (${rules.error})` : `Rules: ${rules.path.split("/").slice(-2).join("/")} (${rules.source})`}${settingsLine(this.docs[this.root]) ? ` · ${settingsLine(this.docs[this.root])}` : ""}`),
+        ),
       );
+  }
+
+  // The brief, in place of the list: fixed-height lines from surface.js, windowed like the list.
+  brief(t) {
+    const lines = this.viewLines();
+    const fit = Math.max(3, Math.floor(this.viewport() / H.line));
+    this.view.top = Math.max(0, Math.min(this.view.top, Math.max(0, lines.length - 3)));
+    const tone = { head: t.foreground, body: t.muted, dim: t.dim, warn: t.blocked };
+    this.rangeText = lines.length > fit ? `lines ${this.view.top + 1}–${Math.min(lines.length, this.view.top + fit)} of ${lines.length}` : null;
+    return div()
+      .id("issues-brief")
+      .flex_1()
+      .min_h(60)
+      .overflow_hidden()
+      .px(14)
+      .on_scroll_wheel((e, cx) => {
+        this.view.top = Math.max(0, Math.min(Math.max(0, lines.length - 3), this.view.top + (e.delta.y < 0 ? 3 : -3)));
+        cx.notify();
+      })
+      .child(v_flex().children(lines.slice(this.view.top, this.view.top + fit + 1).map((l) => div().h(H.line).flex_none().overflow_hidden().whitespace_nowrap().text_size(11.3).text_color(tone[l.tone]).when(l.tone === "head", (x) => x.font_medium()).child(l.text || " "))));
   }
 
   // The list shows rows from `top` and clips the rest; the wheel moves `top` (nav.js wheelTop).
@@ -518,8 +681,8 @@ export default class Issues extends View {
     return shell
       .when(Boolean(doc?.headline), (el) => el.child(div().id("issues-headline").px(14).mb(6).h(38).flex_none().overflow_hidden().whitespace_normal().text_size(12).text_color(t.foreground).tooltip(doc.headline).child(doc.headline)))
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
-      .child(this.list(t, rows, item, hasKeys))
-      .when(Boolean(doc), (el) => el.child(this.legend(t, item)))
+      .child(this.view ? this.brief(t) : this.list(t, rows, item, hasKeys))
+      .when(Boolean(doc), (el) => el.child(this.legend(t, this.actionItem(doc))))
       .child(
         h_flex()
           .flex_none()

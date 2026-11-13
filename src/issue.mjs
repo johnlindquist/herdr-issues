@@ -85,7 +85,7 @@ export function groupIssues(issues) {
 /** Newest report time in a group (ties in ranking break on it). */
 export const lastAt = (/** @type {Group} */ g) => g.members.map((m) => m.created_at ?? "").sort().pop() ?? "";
 
-/** The issue as plain text: what Copy puts on the clipboard and what Main and the Fixer receive. @param {Group} g */
+/** The issue as plain text: what Copy puts on the clipboard (a hand-off uses src/handoff.mjs issueFor, which pastes every report). @param {Group} g */
 export function issueText(g, why = null) {
   const i = g.members[0];
   const lines = [`${i.title}  [${i.id}]`];

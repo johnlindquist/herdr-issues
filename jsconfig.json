@@ -37,6 +37,7 @@
   "include": [
     "main.js",
     "nav.js",
+    "surface.js",
     "gpui-kit.d.ts"
   ]
 }

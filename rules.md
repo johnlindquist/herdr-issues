@@ -1,0 +1,5 @@
+- Find the cause before changing anything. Tell me what you found and what you would change.
+- Reproduce it with a failing test first. Name the test before you edit any other file.
+- Give me your plan and your questions first, and wait for my answer before you change anything.
+- Ask before touching money: refunds, payouts, charges or prices.
+- When you are done, say what you changed and how you checked it.
