@@ -439,7 +439,7 @@ export function planInput(issue, facts) {
 const CODE_REASON = "always runs: the brief starts from the project's own reports, code and tests";
 /**
  * The plan, checked by code. Pure and never throws: a name that is not registered (or not available)
- * is dropped and listed; a repeat is dropped; text is clipped; "code" always runs; an empty or
+ * is dropped and listed; a repeat is merged into the first; text is clipped; "code" always runs; an empty or
  * unreadable plan is code only.
  * @param {string} text @param {{ name: string, label: string }[]} available
  * @returns {{ gatherers: { name: string, label: string, look_for: string, reason: string }[], dropped: { name: string, reason: string }[], note: string|null }}
@@ -458,7 +458,11 @@ export function validatePlan(text, available) {
     const name = String(raw?.name ?? "").trim().toLowerCase();
     const g = available.find((x) => x.name === name);
     if (!g) dropped.push({ name: clip(name || "(no name)", 40), reason: "not a gatherer that can start here" });
-    else if (gatherers.some((x) => x.name === name)) dropped.push({ name, reason: "named twice" });
+    else if (gatherers.some((x) => x.name === name)) {
+      // named again with one more thing to look for: one gatherer, both instructions
+      const first = gatherers.find((x) => x.name === name);
+      if (first && raw?.look_for) first.look_for = clip(`${first.look_for}; ${clip(raw.look_for, 200)}`, 320);
+    }
     else gatherers.push({ name, label: g.label, look_for: clip(raw?.look_for, 200), reason: clip(raw?.reason, 200) || "no reason given" });
   }
   const code = available.find((g) => g.name === "code");
@@ -610,8 +614,8 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   const pkgs = importedPackages(root, candidates.files.map((f) => f.path));
   const facts = [
     files.length ? `files that match the issue's words: ${files.slice(0, 8).join(", ")}` : "no file in the project matches the issue's words",
-    pkgs.length ? `npm packages those files import: ${pkgs.map((p) => p.name).join(", ")}` : "those files import no npm packages (only built-ins and the project's own files)",
-    repo ? `the project's GitHub repository: ${repo}` : "the project has no GitHub repository of its own",
+    pkgs.length ? `npm packages those files import (their latest versions and release notes can be checked): ${pkgs.map((p) => p.name).join(", ")}` : "those files import no npm packages (only built-ins and the project's own files)",
+    repo ? `the project's GitHub repository (its issues and pull requests can be searched, and so can the imported packages' repositories): ${repo}` : "the project has no GitHub repository of its own",
     ...(on.some((g) => g.name === "conversations") ? [pastCount(conversations.dir || sessionsDirFor(root))] : []),
   ];
   let plan;

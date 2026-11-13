@@ -60,11 +60,11 @@ function sessions() {
   return dir;
 }
 
-test("the plan is checked by code: an unknown name is dropped, a repeat is dropped, Code always runs, an empty or unreadable plan is Code only", () => {
-  const p = validatePlan(JSON.stringify({ gatherers: [{ name: "history", look_for: "x".repeat(500), reason: "earlier cards" }, { name: "web-search", reason: "y" }, { name: "history", reason: "again" }, { name: "GitHub", reason: "" }] }), GATHERERS);
+test("the plan is checked by code: an unknown name is dropped, a repeat is merged, Code always runs, an empty or unreadable plan is Code only", () => {
+  const p = validatePlan(JSON.stringify({ gatherers: [{ name: "history", look_for: "x".repeat(500), reason: "earlier cards" }, { name: "web-search", reason: "y" }, { name: "history", look_for: "and blame", reason: "again" }, { name: "GitHub", reason: "" }] }), GATHERERS);
   assert.deepEqual(p.gatherers.map((g) => g.name), ["code", "history", "github"]);
-  assert.deepEqual(p.dropped, [{ name: "web-search", reason: "not a gatherer that can start here" }, { name: "history", reason: "named twice" }]);
-  assert.ok(p.gatherers[1].look_for.length <= 200);
+  assert.deepEqual(p.dropped, [{ name: "web-search", reason: "not a gatherer that can start here" }]);
+  assert.ok(p.gatherers[1].look_for.length <= 320 && p.gatherers[1].look_for.endsWith("; and blame"), "a gatherer named twice runs once, with both instructions");
   assert.equal(p.gatherers[2].reason, "no reason given");
   for (const bad of ["", "not json", "{}", '{"gatherers": []}', '{"gatherers": [{"name": "nope"}]}', '{"gatherers": "all"}']) assert.deepEqual(validatePlan(bad, GATHERERS).gatherers.map((g) => g.name), ["code"], bad);
   assert.match(validatePlan("not json", GATHERERS).note, /only Code ran/);

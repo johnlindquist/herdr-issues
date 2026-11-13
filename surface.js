@@ -125,7 +125,11 @@ export function briefViewLines(doc, width = 44) {
   out.push({ text: "", tone: "body" });
   if (doc.plan) {
     add("The plan (one small model chose the gatherers):", "head");
-    for (const g of doc.plan.gatherers) add(`- ${gathererLine(doc.states?.find((s) => s.name === g.name) ?? { label: g.label, state: "searching" }, g.reason)}${g.look_for ? ` Looks for: ${g.look_for}` : ""}`, "body", "  ");
+    for (const g of doc.plan.gatherers) {
+      add(`- ${gathererLine(doc.states?.find((s) => s.name === g.name) ?? { label: g.label, state: "searching" })}`, "body", "  ");
+      add(`  Why: ${g.reason}`, "dim", "  ");
+      if (g.look_for) add(`  Looks for: ${g.look_for}`, "dim", "  ");
+    }
     for (const g of doc.plan.not_started ?? []) add(`- ${g.label}: not started — ${g.why}`, "dim", "  ");
     for (const d of doc.plan.dropped ?? []) add(`- "${d.name}" dropped from the plan: ${d.reason}`, "warn", "  ");
     if (doc.plan.note) add(doc.plan.note, "warn");

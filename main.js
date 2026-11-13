@@ -40,7 +40,7 @@ const windowHeight = () => {
 const REFRESH_MS = 2 * 60_000; // cheap when nothing changed: the model is only asked about changed issues
 // Fixed row heights: the virtual list places rows by these, so rows clip their text to fit
 // (the full text is in the row's tooltip, Copy and the right-click menu).
-const H = { section: 28, pressing: 96, other: 60, status: 16, line: 16 };
+const H = { section: 28, pressing: 96, other: 60, status: 18, line: 16 };
 
 /** One call to the helper; JSON in, JSON out. */
 async function callHelper(argv, timeout = 120_000) {
@@ -446,7 +446,7 @@ export default class Issues extends View {
         lines.map((line, i) =>
           h_flex()
             .id(`issue-status-${item.id}-${i}`)
-            .h(H.status)
+            .h(H.status - 2)
             .pl(pad)
             .gap(5)
             .items_center()
