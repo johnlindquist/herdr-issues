@@ -302,7 +302,7 @@ export default class Issues extends View {
     try {
       walk(layout(), null);
     } catch {}
-    return Math.max(28, Math.floor((px - 30) / 6.9));
+    return Math.max(28, Math.floor((px - 30) / 6.0));
   }
 
   // One step of a hand-off or a brief view: gather the context (the row says so), reload the
@@ -344,14 +344,16 @@ export default class Issues extends View {
         return cx.notify();
       }
       const handoff = real === "send-main" || real === "new-main";
+      let fresh = null; // the key of a brief gathered in this press (not one reused from before)
       if (handoff && !bare) {
         // Gather first, where the person can see it. A failure stops here: nothing is sent.
         const b = await this.gatherStep(id, root, cx);
         if (!b) return;
+        if (!b.cached) fresh = b.key;
         this.notice = real === "send-main" ? "Sending to Main…" : "Starting a new Main…";
         cx.notify();
       }
-      const r = await callHelper(["act", id, real, "--root", root, ...(terminal ? ["--terminal", terminal] : []), ...(bare ? ["--no-context"] : [])], 75_000);
+      const r = await callHelper(["act", id, real, "--root", root, ...(terminal ? ["--terminal", terminal] : []), ...(bare ? ["--no-context"] : []), ...(fresh ? ["--gathered", fresh] : [])], 75_000);
       if (!r.ok) this.notice = r.error;
       else if (handoff) {
         if (real === "new-main") run(r.ok.command.name, r.ok.command.args); // a new space with Pi, its first message the prompt

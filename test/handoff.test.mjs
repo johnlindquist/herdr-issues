@@ -195,13 +195,16 @@ test("CLI: prompt shows exactly what would be sent; send-main and new-main send 
   assert.equal(send.out.prompt, p.out.prompt);
   assert.deepEqual(send.out.command.slice(0, 3), ["hc", "send", "t9"]);
   assert.equal(send.out.context.state, "reused");
+  const pressed = cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run", "--gathered", p.out.context.key], env);
+  assert.equal(pressed.out.context.state, "gathered", "the sidebar's own gather step counts as gathered for that press");
+  assert.equal(cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run", "--gathered", "other"], env).out.context.state, "reused");
   assert.equal(send.out.rules_file, DEFAULT_RULES_FILE);
   const nm = cli(["act", "card:closed-home", "new-main", "--root", root], env);
   assert.deepEqual([nm.out.command.name, nm.out.command.args.task, nm.out.command.args.folder], ["space.new", p.out.prompt, root]);
   assert.deepEqual(nm.out.command.args.argv, ["pi", "--name", "Main"]);
   assert.equal(cli(["act", "card:closed-home", "send-main", "--root", root], env).err.error.code, "NO_MAIN");
   const r = receiptsOf(first.state);
-  assert.deepEqual(r.map((x) => [x.action, x.context.state]), [["send-main", "reused"], ["new-main", "reused"]]);
+  assert.deepEqual(r.map((x) => [x.action, x.context.state]), [["send-main", "reused"], ["send-main", "gathered"], ["send-main", "reused"], ["new-main", "reused"]]);
   assert.equal(cli(["show", "--root", root], env).out.pressing[0].sent.action, "new-main");
 });
 

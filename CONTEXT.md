@@ -59,6 +59,20 @@ only after a failure.
 The brief is saved by content hash (the issue's reports, what code collected, the model, the
 instruction): pressing M again reuses it and says so; changed code or a new report gathers again.
 
+Gather instructions (`GATHER_INSTRUCTIONS`, `--gather-instruction`, `TRIAGE_GATHER_INSTRUCTION`), graded
+2026-11-12 on RentAPlace (5 gathers on each of two issues, Haiku, every kept claim judged by Opus
+against the lines and reports it cites; `checks.md` "The context brief"):
+
+| Instruction | Claims the judge passed | Gathers with every claim passed | Uncited or invented-file claims kept |
+|---|---|---|---|
+| baseline | 39 of 68 | 0 of 10 | 0 |
+| **evidence-only** (default) | 77 of 82 | 5 of 10 | 0 |
+| absence-is-a-question | 73 of 80 | 5 of 10 | 0 |
+
+The brief is still wrong sometimes (about 1 claim in 16), so the prompt tells Main to check it.
+One press costs about 6 to 7 s and $0.009 the first time ($0.003 to $0.005 when the model's prompt
+cache is warm) on Haiku 4.5.
+
 `src/handoff.mjs`: `issueFor` (every report pasted), `loadRules`, `assemblePrompt` (issue + brief +
 rules, in that order, nothing else). New Main is Herdr's `space.new {argv, task}`: the app appends
 `task` to the agent's argv, so Pi opens with the prompt as its first message.

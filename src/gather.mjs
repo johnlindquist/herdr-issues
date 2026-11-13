@@ -247,8 +247,27 @@ Rules:
 Reply with JSON only:
 {"reported": [{"text": "...", "cites": ["..."]}], "where": [...], "tests": [...], "unknown": [...]}`;
 
-export const GATHER_INSTRUCTIONS = { baseline: BASE };
-export const DEFAULT_GATHER_INSTRUCTION = "baseline";
+// Round 2 of the brief's hill climb (checks.md "The context brief"). Round 1's judge found 22 of 68 claims said what
+// the code "does not check" or what a test "does not cover" from excerpts that cannot show it, and 7 added to the reports.
+const EVIDENCE_ONLY = `${BASE}
+
+Say only what the cited lines themselves show. You see excerpts, not whole files, so you cannot know what the code does not do.
+- A "where" claim says what the cited line is, in its own words ("line 40 throws ListingClosed when status is not active"), then "likely relevant because" and the report's words. Never write "does not check", "does not validate", "never", "missing", "no check" or "lacks" about code: write "the excerpt shows no line about X" instead.
+- A "tests" claim gives the test's name as written on the cited line and stops. Never say what a test does not cover and never say that no test exists: write "no test naming X appears in the excerpts" as an "unknown" instead.
+- A "reported" claim quotes the report and counts the reports that say the same. It adds no dates, impact, cause or severity that the report text does not state. A question stays a question.
+- An "unknown" claim is a question someone must answer, citing the report or line that raises it. It does not guess the answer.`;
+
+// Round 3 (not the default: 73 of 80 ok, no better than round 2). Round 2 left 5 of 82: three said code acts "without checking" (or that "no test ... appears") from partial
+// excerpts, one put a detail on the wrong line, one read seed data as what the app does.
+const ABSENCE_IS_A_QUESTION = `${EVIDENCE_ONLY}
+
+What an excerpt leaves out is not evidence. Lines between excerpts are hidden from you ("…").
+- Never write "without checking", "without validating" or "no test ... appears". In "where" and "tests", say only what the cited line contains. If you wonder whether something is checked or tested, put it in "unknown" as a plain question that cites the line ("Does the page check the home's status after loading it on line 31?").
+- Each detail you state must be on the exact line you cite for it. If two details are on two lines, cite both lines.
+- A line in seed data, a fixture or a migration shows what the data looks like, not what the app does when someone acts. Say "seed data" or "the table has" for those lines.`;
+
+export const GATHER_INSTRUCTIONS = { baseline: BASE, "evidence-only": EVIDENCE_ONLY, "absence-is-a-question": ABSENCE_IS_A_QUESTION };
+export const DEFAULT_GATHER_INSTRUCTION = "evidence-only"; // graded 2026-11-12 (5 gathers x 2 issues, judged by opus-5-5): baseline 39 of 68 claims ok, evidence-only 77 of 82, absence-is-a-question 73 of 80
 
 /** @param {string} [name] */
 export function gatherSystem(name = DEFAULT_GATHER_INSTRUCTION) {

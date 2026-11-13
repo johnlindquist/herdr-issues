@@ -243,7 +243,7 @@ async function gatherFor(cfg, id, force) {
  * What a hand-off sends: issue + brief + rules. Gathers first (reusing a saved brief). A failed
  * gather throws GATHER_FAILED: nothing is assembled unless the caller chose --no-context.
  */
-async function handoff(cfg, id, noContext) {
+async function handoff(cfg, id, noContext, justGathered = null) {
   const { g, issue } = await findIssue(cfg, id);
   const rules = loadRules({ root: cfg.root, explicit: cfg.rules });
   let context = { state: "none", key: null, ms: 0, cost_usd: 0, claims: 0, dropped: 0 };
@@ -257,7 +257,10 @@ async function handoff(cfg, id, noContext) {
       throw new GatherFailed(`${e.message}. Nothing was sent. To send the issue and the rules without context, repeat with --no-context`);
     }
     brief = briefText(validateBrief(doc.brief));
-    context = { state: doc.cached ? "reused" : "gathered", key: doc.key, ms: doc.ms.total, cost_usd: doc.cost_usd, claims: ["reported", "where", "tests", "unknown"].reduce((n, k) => n + doc.brief[k].length, 0), dropped: doc.brief.dropped.length };
+    // The sidebar gathers as its own visible step, then acts: `--gathered <key>` says the brief with that key was made for this press.
+    const fresh = !doc.cached || (justGathered && justGathered === doc.key);
+    const made = doc.cached ? doc.first : doc;
+    context = { state: fresh ? "gathered" : "reused", key: doc.key, ms: fresh ? made.ms.total : doc.ms.total, cost_usd: fresh ? made.cost_usd : 0, claims: ["reported", "where", "tests", "unknown"].reduce((n, k) => n + doc.brief[k].length, 0), dropped: doc.brief.dropped.length };
   }
   return { g, issue, rules, context, brief, prompt: assemblePrompt({ issue: issue.text, brief, rules }) };
 }
@@ -277,7 +280,7 @@ async function act(cfg, id, action, args) {
     const text = issueText(g, found.why);
     Object.assign(receipt, { text, clipboard: dry || args["no-clipboard"] ? false : sh("pbcopy", [], text).ok });
   } else if (HANDOFFS.includes(action)) {
-    const h = await handoff(cfg, id, !!args["no-context"]);
+    const h = await handoff(cfg, id, !!args["no-context"], typeof args.gathered === "string" ? args.gathered : null);
     Object.assign(receipt, { context: h.context, rules_file: h.rules.path, prompt: h.prompt });
     if (action === "send-main") {
       Object.assign(receipt, { terminal: args.terminal, command: ["hc", "send", args.terminal, h.prompt] });
@@ -334,7 +337,7 @@ const DESCRIBE = {
     refresh: "refresh --root <project> [--force]: read the sources; ask the model only when an issue changed (content hash), sending changed issues in full and unchanged ones as titles",
     gather: "gather <id> --root <project> [--force]: the context brief for one issue as JSON. Code collects every merged report, the files a tracker card names, repo lines matching the issue's distinctive terms, tests near them and recent commits (bounded; local only); the small model condenses that into brief {reported, where, tests, unknown}, each a list of {text, cites}. A cite is a report id, a path:line the model was shown, or commit:<sha>; a claim with a missing or unresolvable cite, or a cause stated as fact, is moved to brief.dropped with the reason. Also: text (the brief as sent), candidates, ms {collect, model, total}, tokens, cost_usd, cached (true when the saved brief was reused; saved by content hash of the issue, the collected evidence, the model and the instruction), rules, last_sent",
     prompt: "prompt <id> --root <project> [--no-context]: exactly what a hand-off would send: {prompt, context {state: gathered | reused | none, ms, cost_usd, claims, dropped}, rules_file}. The prompt is the issue (title, ids, the why, every merged report), then the context brief, then the rules, and nothing else",
-    act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (gathers, then hc send) | new-main [--apply] (gathers, then prints the herdr space.new command whose task is the prompt; --apply runs it) | brief (same as gather) | open | dismiss | restore. --no-context: hand over the issue and the rules without a brief (an explicit choice; a failed gather never sends on its own). --dry-run records the receipt without doing it. Every hand-off's receipt keeps the prompt, the context state, time, cost and the rules file",
+    act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (gathers, then hc send) | new-main [--apply] (gathers, then prints the herdr space.new command whose task is the prompt; --apply runs it) | brief (same as gather) | open | dismiss | restore. --gathered <key>: the brief with this key was gathered for this hand-off just now (the sidebar gathers as a visible step first), so the receipt says gathered, not reused. --no-context: hand over the issue and the rules without a brief (an explicit choice; a failed gather never sends on its own). --dry-run records the receipt without doing it. Every hand-off's receipt keeps the prompt, the context state, time, cost and the rules file",
     rules: `rules --root <project> [--init]: the one rules file a hand-off uses and its text: --rules <path> or config, else <project>/${PROJECT_RULES}, else the widget's own rules.md. --init copies the default to <project>/${PROJECT_RULES} so it can be edited there`,
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
     config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}] [--rules <path>] [--gather-instruction ${Object.keys(GATHER_INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
