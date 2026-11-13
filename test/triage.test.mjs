@@ -89,12 +89,12 @@ test("github source maps gh issues and reports gh failure as unavailable", async
   assert.throws(() => pickSources({ source: "jira", root: "/" }), SourceUnavailable);
 });
 
-test("actions: Send to Main and Fixer are disabled with a reason when their agent is missing", () => {
+test("actions: Send to Main is disabled with a reason when the space has no Main", () => {
   const [g] = groupIssues([issue("ticket-1", "T")]);
-  assert.deepEqual(availability("fixer", g, {}), { enabled: false, reason: "No Fixer agent in this space" });
+  assert.deepEqual(availability("send-main", g, {}), { enabled: false, reason: "No Main conversation in this space", code: "NO_MAIN" });
   assert.equal(availability("send-main", g, { main: "t3" }).enabled, true);
   assert.equal(availability("open", g).enabled, false);
-  assert.equal(newMainCommand(g, "why", "/p").args.folder, "/p");
+  assert.equal(newMainCommand("T", "prompt", "/p").args.folder, "/p");
   assert.deepEqual(new Set(ACTIONS.map((a) => a.key)).size, ACTIONS.length);
 });
 
@@ -119,8 +119,7 @@ test("CLI: missing, then ready with a cached second refresh, then act and dismis
   const send = cli(["act", "card:closed-home", "send-main", "--root", root, "--terminal", "t9", "--dry-run"], env);
   assert.deepEqual(send.out.command.slice(0, 3), ["hc", "send", "t9"]);
   assert.match(send.out.prompt, /Why it's pressing \(Issues\): Blocks booking/);
-  const fixer = cli(["act", "card:closed-home", "fixer", "--root", root], env);
-  assert.deepEqual([fixer.code, fixer.err.error.code], [1, "ACTION_UNAVAILABLE"]);
+  assert.match(send.out.prompt, /Rules for this hand-off \(.*rules\.md\):\n- Find the cause before changing anything/);
   const nm = cli(["act", "card:closed-home", "new-main", "--root", root], env);
   assert.equal(nm.out.command.name, "space.new");
   cli(["act", "card:closed-home", "dismiss", "--root", root], env);
@@ -146,15 +145,6 @@ test("CLI: a failed model keeps the last summary and says failed; no source says
 test("issue text names every merged report and the source", () => {
   const [g] = groupIssues([issue("t1", "Refund", "When?"), issue("t2", "Refund", "When?")]);
   assert.equal(issueText(g, "money"), "Refund  [t1]\nReported 2 times: t1, t2\nWhy it's pressing (Issues): money\nSource: db t1\n\nWhen?");
-});
-
-test("Hand to Fixer sends the issue and nothing that widens the Fixer's job", async () => {
-  const { fixerPrompt } = await import("../src/actions.mjs");
-  const [g] = groupIssues([issue("ticket-0001", "Refund timing", "When will my refund show?"), issue("ticket-0009", "Refund timing", "When will my refund show?")]);
-  const p = fixerPrompt(g, "Money: 2 guests ask when their refund will show");
-  assert.match(p, /^Fixer: an issue from the Issues widget\./);
-  for (const part of ["Refund timing", "[ticket-0001]", "ticket-0009", "Money: 2 guests ask", "When will my refund show?"]) assert.ok(p.includes(part), part);
-  for (const widen of [/reproduce/i, /fix the cause/i, /report the change/i, /\bcheck\b/i, /commit/i]) assert.doesNotMatch(p, widen);
 });
 
 test("the hill-climbed instruction is the default; the original stays selectable by name", async () => {

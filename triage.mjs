@@ -5,7 +5,10 @@
 //   node triage.mjs describe
 //   node triage.mjs show    --root <project>
 //   node triage.mjs refresh --root <project> [--force]
-//   node triage.mjs act <id> <copy|send-main|new-main|fixer|open|dismiss|restore> --root <project> [--terminal t] [--apply] [--dry-run]
+//   node triage.mjs gather <id> --root <project> [--force]          the context brief for one issue, with citations
+//   node triage.mjs prompt <id> --root <project> [--no-context]     exactly what a hand-off would send
+//   node triage.mjs act <id> <copy|send-main|new-main|brief|open|dismiss|restore> --root <project> [--terminal t] [--apply] [--dry-run] [--no-context]
+//   node triage.mjs rules   --root <project> [--init]
 //   node triage.mjs explain <id> --root <project>
 //   node triage.mjs config  --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id]
 
@@ -15,7 +18,10 @@ import { spawnSync } from "node:child_process";
 import { pickSources, SourceUnavailable } from "./src/sources.mjs";
 import { groupIssues, hashOf, issueText, compareIds, lastAt } from "./src/issue.mjs";
 import { DEFAULT_MODEL, DEFAULT_INSTRUCTION, INSTRUCTIONS, systemFor, callModel, modelInput, parseSummary, others } from "./src/triage.mjs";
-import { ACTIONS, ACTION_NAMES, ActionUnavailable, availability, mainPrompt, fixerPrompt, newMainCommand, openTarget } from "./src/actions.mjs";
+import { ACTIONS, ACTION_NAMES, HANDOFFS, ActionUnavailable, availability, newMainCommand, openTarget } from "./src/actions.mjs";
+import { gather, GatherFailed, briefText, validateBrief, DEFAULT_GATHER_INSTRUCTION, GATHER_INSTRUCTIONS, LIMITS } from "./src/gather.mjs";
+import { issueFor, assemblePrompt, loadRules, PROJECT_RULES, DEFAULT_RULES_FILE } from "./src/handoff.mjs";
+import fs from "node:fs";
 import { defaultStateDir, storeFor } from "./src/store.mjs";
 
 const VERSION = 1;
@@ -48,7 +54,7 @@ async function configFor(args) {
   const store = storeFor(stateDir, root);
   const saved = await store.read("config.json", {});
   const pick = (k, env) => (typeof args[k] === "string" ? args[k] : saved[k] ?? process.env[env] ?? null);
-  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION };
+  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION, rules: pick("rules", "TRIAGE_RULES"), gatherInstruction: pick("gather-instruction", "TRIAGE_GATHER_INSTRUCTION") ?? DEFAULT_GATHER_INSTRUCTION };
 }
 
 function githubRepoOf(root) {
@@ -159,6 +165,22 @@ async function view(cfg) {
     .filter((p) => !dismissed.has(p.id) && byId.has(p.id))
     .map((p) => ({ ...card(byId.get(p.id)), title: p.title, why: p.why, merged: p.ids.slice(1).map((x) => card(byId.get(x))).filter(Boolean), count: p.ids.reduce((n, x) => n + (byId.get(x)?.members.length ?? 0), 0) }));
   const taken = new Set((doc?.summary?.pressing ?? []).flatMap((p) => p.ids));
+  // Per issue: is there a context brief for it as it reads now, and what was last handed over.
+  const gathers = await cfg.store.read("gathers.json", {});
+  const sent = await cfg.store.read("sent.json", {});
+  const withContext = (item, groupIds) => {
+    const g = gathers[item.id];
+    const hash = hashOf(groupIds.map((x) => [x, byId.get(x)?.hash]));
+    const s = sent[item.id];
+    return { ...item, context: g && g.issue_hash === hash ? { state: g.state, at: g.at, error: g.error ?? null, claims: g.claims ?? null, dropped: g.dropped ?? null } : { state: "none" }, sent: s ? { at: s.at, action: s.action, context: s.context?.state ?? null } : null };
+  };
+  let rules = null;
+  try {
+    const r = loadRules({ root: cfg.root, explicit: cfg.rules });
+    rules = { path: r.path, source: r.source, error: null };
+  } catch (/** @type {any} */ e) {
+    rules = { path: null, source: null, error: String(e.message) };
+  }
   return {
     version: VERSION,
     root: cfg.root,
@@ -170,8 +192,9 @@ async function view(cfg) {
     updated_at: doc?.updated_at ?? null,
     checked_at: doc?.checked_at ?? null,
     headline: doc?.summary?.headline ?? null,
-    pressing,
-    others: others(groups, taken).filter((g) => !dismissed.has(g.id)).map(card),
+    pressing: pressing.map((p) => withContext(p, [p.id, ...p.merged.map((m) => m.id)])),
+    others: others(groups, taken).filter((g) => !dismissed.has(g.id)).map((g) => withContext(card(g), [g.id])),
+    rules,
     dismissed: [...dismissed].sort(compareIds),
     counts: { issues: groups.reduce((n, g) => n + g.members.length, 0), distinct: groups.length },
     actions: ACTIONS,
@@ -180,42 +203,90 @@ async function view(cfg) {
   };
 }
 
-// ---------- act ----------
+// ---------- gather, prompt, act ----------
 
-async function findGroup(cfg, id) {
+/** The issue an id belongs to: its own group first, then every group the model merged with it; the why and the shown title. */
+async function findIssue(cfg, id) {
   const doc = await cfg.store.read("triage.json", null);
-  const g = (doc?.groups ?? []).find((x) => x.members.some((m) => m.id === id));
+  const groups = doc?.groups ?? [];
+  const g = groups.find((x) => x.members.some((m) => m.id === id));
   if (!g) throw Object.assign(new Error(`no issue ${id} in the last refresh (run refresh)`), { code: "NOT_FOUND" });
-  const why = (doc.summary?.pressing ?? []).find((p) => p.ids.includes(g.id))?.why ?? null;
-  return { g, why, doc };
+  const p = (doc.summary?.pressing ?? []).find((x) => x.ids.includes(g.id)) ?? null;
+  const all = p ? p.ids.map((x) => groups.find((y) => y.id === x)).filter(Boolean) : [g];
+  const lead = all[0] ?? g;
+  return { g: lead, groups: all, why: p?.why ?? null, title: p?.title ?? null, doc, issue: issueFor(all, p?.why ?? null, p?.title ?? null) };
 }
 
 function sh(cmd, argv, input) {
   const r = spawnSync(cmd, argv, { input, encoding: "utf8", timeout: 20_000 });
-  return { ok: r.status === 0, code: r.status, stderr: (r.stderr ?? "").trim().slice(0, 300) || (r.error ? String(r.error) : "") };
+  return { ok: r.status === 0, code: r.status, stdout: (r.stdout ?? "").trim().slice(0, 400), stderr: (r.stderr ?? "").trim().slice(0, 300) || (r.error ? String(r.error) : "") };
+}
+
+const lastSent = async (cfg, id) => (await cfg.store.read("sent.json", {}))[id] ?? null;
+
+/** `gather <id>`: the context brief as JSON, with its citations, what the check dropped, time and cost. */
+async function gatherFor(cfg, id, force) {
+  const { issue } = await findIssue(cfg, id);
+  const doc = await gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force });
+  validateBrief(doc.brief);
+  let rules;
+  try {
+    const r = loadRules({ root: cfg.root, explicit: cfg.rules });
+    rules = { path: r.path, source: r.source, error: null };
+  } catch (/** @type {any} */ e) {
+    rules = { path: null, source: null, error: String(e.message) };
+  }
+  return { ...doc, id: issue.id, ids: issue.ids, title: issue.title, state: "ready", rules, last_sent: await lastSent(cfg, issue.id) };
+}
+
+/**
+ * What a hand-off sends: issue + brief + rules. Gathers first (reusing a saved brief). A failed
+ * gather throws GATHER_FAILED: nothing is assembled unless the caller chose --no-context.
+ */
+async function handoff(cfg, id, noContext) {
+  const { g, issue } = await findIssue(cfg, id);
+  const rules = loadRules({ root: cfg.root, explicit: cfg.rules });
+  let context = { state: "none", key: null, ms: 0, cost_usd: 0, claims: 0, dropped: 0 };
+  let brief = null;
+  if (!noContext) {
+    let doc;
+    try {
+      doc = await gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue });
+    } catch (/** @type {any} */ e) {
+      if (!(e instanceof GatherFailed)) throw e;
+      throw new GatherFailed(`${e.message}. Nothing was sent. To send the issue and the rules without context, repeat with --no-context`);
+    }
+    brief = briefText(validateBrief(doc.brief));
+    context = { state: doc.cached ? "reused" : "gathered", key: doc.key, ms: doc.ms.total, cost_usd: doc.cost_usd, claims: ["reported", "where", "tests", "unknown"].reduce((n, k) => n + doc.brief[k].length, 0), dropped: doc.brief.dropped.length };
+  }
+  return { g, issue, rules, context, brief, prompt: assemblePrompt({ issue: issue.text, brief, rules }) };
 }
 
 async function act(cfg, id, action, args) {
   if (!ACTION_NAMES.includes(action)) throw new UsageError(`action is one of ${ACTION_NAMES.join(", ")}`);
-  const { g, why } = await findGroup(cfg, id);
+  if (action === "brief") return gatherFor(cfg, id, !!args.force);
   const dry = !!args["dry-run"];
-  const targets = { main: action === "send-main" ? args.terminal : null, fixer: action === "fixer" ? args.terminal : null };
-  if (action !== "dismiss" && action !== "restore" && action !== "copy" && action !== "new-main") {
-    const a = availability(/** @type {any} */ (action), g, targets);
-    if (!a.enabled) throw new ActionUnavailable(a.reason);
+  const found = await findIssue(cfg, id);
+  const g = found.g;
+  if (action === "send-main" || action === "open") {
+    const a = availability(/** @type {any} */ (action), g, { main: action === "send-main" && typeof args.terminal === "string" ? args.terminal : null });
+    if (!a.enabled) throw new ActionUnavailable(a.reason, a.code);
   }
-  const receipt = { at: new Date().toISOString(), action, id: g.id, ids: g.members.map((m) => m.id), dry_run: dry };
+  const receipt = { at: new Date().toISOString(), action, id: g.id, ids: found.issue.ids, dry_run: dry };
   if (action === "copy") {
-    const text = issueText(g, why);
+    const text = issueText(g, found.why);
     Object.assign(receipt, { text, clipboard: dry || args["no-clipboard"] ? false : sh("pbcopy", [], text).ok });
-  } else if (action === "send-main" || action === "fixer") {
-    const prompt = action === "send-main" ? mainPrompt(g, why) : fixerPrompt(g, why);
-    Object.assign(receipt, { terminal: args.terminal, prompt, command: ["hc", "send", args.terminal, prompt] });
-    if (!dry) receipt.result = sh("hc", ["send", String(args.terminal), prompt]);
-  } else if (action === "new-main") {
-    const command = newMainCommand(g, why, cfg.root);
-    Object.assign(receipt, { command });
-    if (args.apply && !dry) receipt.result = sh("herdr-app", ["do", command.name, JSON.stringify(command.args)]);
+  } else if (HANDOFFS.includes(action)) {
+    const h = await handoff(cfg, id, !!args["no-context"]);
+    Object.assign(receipt, { context: h.context, rules_file: h.rules.path, prompt: h.prompt });
+    if (action === "send-main") {
+      Object.assign(receipt, { terminal: args.terminal, command: ["hc", "send", args.terminal, h.prompt] });
+      if (!dry) receipt.result = sh("hc", ["send", String(args.terminal), h.prompt]);
+    } else {
+      const command = newMainCommand(h.issue.title, h.prompt, cfg.root);
+      Object.assign(receipt, { command, applied: Boolean(args.apply && !dry) });
+      if (args.apply && !dry) receipt.result = sh("herdr-app", ["do", command.name, JSON.stringify(command.args)]);
+    }
   } else if (action === "open") {
     const target = openTarget(g, cfg.root);
     Object.assign(receipt, { target });
@@ -228,11 +299,28 @@ async function act(cfg, id, action, args) {
   }
   if (receipt.result && !receipt.result.ok) throw Object.assign(new Error(`${action} failed: ${receipt.result.stderr || receipt.result.code}`), { code: "ACTION_FAILED" });
   await cfg.store.receipt(receipt);
+  if (HANDOFFS.includes(action)) {
+    const sent = await cfg.store.read("sent.json", {});
+    sent[g.id] = { at: receipt.at, action, context: receipt["context"], rules_file: receipt["rules_file"], prompt: receipt["prompt"], dry_run: dry };
+    await cfg.store.write("sent.json", sent);
+  }
   return receipt;
 }
 
+/** `rules`: which file a hand-off would use and its text; --init copies the default into the project so it can be edited there. */
+function rulesCmd(cfg, init) {
+  const own = path.join(cfg.root, PROJECT_RULES);
+  let created = false;
+  if (init && !fs.existsSync(own)) {
+    fs.copyFileSync(DEFAULT_RULES_FILE, own);
+    created = true;
+  }
+  const r = loadRules({ root: cfg.root, explicit: cfg.rules });
+  return { path: r.path, source: r.source, text: r.text, project_file: own, default_file: DEFAULT_RULES_FILE, created };
+}
+
 async function explain(cfg, id) {
-  const { g, why, doc } = await findGroup(cfg, id);
+  const { g, why, doc } = await findIssue(cfg, id);
   const rank = (doc.summary?.pressing ?? []).findIndex((p) => p.ids.includes(g.id));
   const prompt = `Explain this issue from the project's tracker and why Issues ranked it ${rank >= 0 ? `#${rank + 1} of the most pressing` : "as not pressing"}. Read the code it touches; don't change anything.\n\n${issueText(g, why)}`;
   return { id: g.id, ids: g.members.map((m) => m.id), pressing_rank: rank >= 0 ? rank + 1 : null, why, text: issueText(g, why), hash: g.hash, prompt, argv: ["pi", "--name", `Explain ${g.id}`, prompt] };
@@ -240,18 +328,32 @@ async function explain(cfg, id) {
 
 const DESCRIBE = {
   name: "Issues (herdr-triage)",
-  what: "The Issues widget. Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, send it to Main, start a new Main for it, hand it to the Fixer, open its source, dismiss it.",
+  what: "The Issues widget. Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, hand it to Main or to a new Main (after gathering a cited context brief, with the project's rules), view that brief, open its source, dismiss it.",
   commands: {
-    show: "show --root <project>: the last refresh, no model call. state: ready | empty | missing (never refreshed) | stale (older than 30 min) | failed (model failed; last summary kept) | unavailable (no source could be read); busy: a refresh is running",
+    show: "show --root <project>: the last refresh, no model call. state: ready | empty | missing (never refreshed) | stale (older than 30 min) | failed (model failed; last summary kept) | unavailable (no source could be read); busy: a refresh is running. Each issue has context {state: none | ready | failed, error} (its context brief) and sent (the last hand-off); rules names the rules file a hand-off would use",
     refresh: "refresh --root <project> [--force]: read the sources; ask the model only when an issue changed (content hash), sending changed issues in full and unchanged ones as titles",
-    act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (hc send) | new-main [--apply] (prints the herdr space.new command; --apply runs it) | fixer --terminal <Fixer terminal> | open | dismiss | restore. --dry-run records the receipt without doing it",
+    gather: "gather <id> --root <project> [--force]: the context brief for one issue as JSON. Code collects every merged report, the files a tracker card names, repo lines matching the issue's distinctive terms, tests near them and recent commits (bounded; local only); the small model condenses that into brief {reported, where, tests, unknown}, each a list of {text, cites}. A cite is a report id, a path:line the model was shown, or commit:<sha>; a claim with a missing or unresolvable cite, or a cause stated as fact, is moved to brief.dropped with the reason. Also: text (the brief as sent), candidates, ms {collect, model, total}, tokens, cost_usd, cached (true when the saved brief was reused; saved by content hash of the issue, the collected evidence, the model and the instruction), rules, last_sent",
+    prompt: "prompt <id> --root <project> [--no-context]: exactly what a hand-off would send: {prompt, context {state: gathered | reused | none, ms, cost_usd, claims, dropped}, rules_file}. The prompt is the issue (title, ids, the why, every merged report), then the context brief, then the rules, and nothing else",
+    act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (gathers, then hc send) | new-main [--apply] (gathers, then prints the herdr space.new command whose task is the prompt; --apply runs it) | brief (same as gather) | open | dismiss | restore. --no-context: hand over the issue and the rules without a brief (an explicit choice; a failed gather never sends on its own). --dry-run records the receipt without doing it. Every hand-off's receipt keeps the prompt, the context state, time, cost and the rules file",
+    rules: `rules --root <project> [--init]: the one rules file a hand-off uses and its text: --rules <path> or config, else <project>/${PROJECT_RULES}, else the widget's own rules.md. --init copies the default to <project>/${PROJECT_RULES} so it can be edited there`,
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
-    config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
+    config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}] [--rules <path>] [--gather-instruction ${Object.keys(GATHER_INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
     describe: "this description",
   },
   actions: ACTIONS,
+  errors: {
+    GATHER_FAILED: "the context brief could not be made (model call failed, no JSON, or no claim survived the citation check). Nothing was sent; --no-context sends without it",
+    NO_MAIN: "send-main without --terminal: no Main conversation to send to",
+    RULES_MISSING: "the rules file is missing or empty; nothing is sent without rules",
+    NOT_FOUND: "no such issue in the last refresh",
+    ACTION_UNAVAILABLE: "the action can't run for this issue (the message says why)",
+    ACTION_FAILED: "the command that carries the action out failed",
+    INVALID: "bad usage or an unknown name",
+    SOURCE_UNAVAILABLE: "no source could be read",
+  },
+  gather_limits: LIMITS,
   sources: { local: "<root>/data/rentaplace.db (open support tickets, feedback not rated good) and <root>/tracker/board.json (cards not done)", github: "open issues via `gh issue list` (read-only)" },
-  environment: { TRIAGE_MODEL: `default ${DEFAULT_MODEL}`, TRIAGE_INSTRUCTION: `${Object.keys(INSTRUCTIONS).join(" | ")} (default ${DEFAULT_INSTRUCTION})`, TRIAGE_SOURCE: "local | github | local,github", TRIAGE_REPO: "owner/name", TRIAGE_STATE: "state dir (default ~/.cache/herdr-triage/default)", TRIAGE_MODEL_CMD: 'JSON argv run instead of Pi; gets {"model","system","input"} on stdin, prints the reply' },
+  environment: { TRIAGE_MODEL: `default ${DEFAULT_MODEL} (reads the inbox and writes the context brief)`, TRIAGE_INSTRUCTION: `${Object.keys(INSTRUCTIONS).join(" | ")} (default ${DEFAULT_INSTRUCTION})`, TRIAGE_GATHER_INSTRUCTION: `${Object.keys(GATHER_INSTRUCTIONS).join(" | ")} (default ${DEFAULT_GATHER_INSTRUCTION})`, TRIAGE_RULES: "path of the rules file", TRIAGE_SOURCE: "local | github | local,github", TRIAGE_REPO: "owner/name", TRIAGE_STATE: "state dir (default ~/.cache/herdr-triage/default)", TRIAGE_MODEL_CMD: 'JSON argv run instead of Pi; gets {"model","system","input"} on stdin, prints the reply' },
 };
 
 function fail(e) {
@@ -271,12 +373,21 @@ try {
     else if (cmd === "act") {
       if (!a1 || !a2) throw new UsageError("act <id> <action>");
       out = await act(cfg, a1, a2, args);
+    } else if (cmd === "gather") {
+      if (!a1) throw new UsageError("gather <id>");
+      out = await gatherFor(cfg, a1, !!args.force);
+    } else if (cmd === "prompt") {
+      if (!a1) throw new UsageError("prompt <id>");
+      const h = await handoff(cfg, a1, !!args["no-context"]);
+      out = { id: h.issue.id, ids: h.issue.ids, prompt: h.prompt, context: h.context, rules_file: h.rules.path, rules_source: h.rules.source };
+    } else if (cmd === "rules") {
+      out = rulesCmd(cfg, !!args.init);
     } else if (cmd === "explain") {
       if (!a1) throw new UsageError("explain <id>");
       out = await explain(cfg, a1);
     } else if (cmd === "config") {
       const saved = await cfg.store.read("config.json", {});
-      for (const k of ["source", "repo", "model", "instruction"]) if (typeof args[k] === "string") saved[k] = args[k];
+      for (const k of ["source", "repo", "model", "instruction", "rules", "gather-instruction"]) if (typeof args[k] === "string") saved[k] = args[k];
       await cfg.store.write("config.json", saved);
       out = { root: cfg.root, config: saved };
     } else throw new UsageError(`unknown command ${cmd ?? "(none)"}; try describe`);

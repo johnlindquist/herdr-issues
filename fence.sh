@@ -7,5 +7,6 @@ tsc -p tsconfig.node.json
 tsc -p menu/jsconfig.json
 for f in triage.mjs src/*.mjs main.js menu/main.js; do node --check "$f"; done
 node --check nav.js
+node --check surface.js
 node --disable-warning=ExperimentalWarning --test test/*.test.mjs
 echo "fence: ok"
