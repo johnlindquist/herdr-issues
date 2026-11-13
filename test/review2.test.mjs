@@ -43,6 +43,8 @@ const KEPT = ["closed homes must refuse checkout in src/domain/bookings.ts:15", 
 test("finding 1: after a credential name the whole VALUE goes: multi-line and escaped quotes, quoted header values, YAML blocks", async () => {
   const left = NAMED.filter(([, text, parts]) => parts.some((p) => G.redact(text).includes(p))).map(([what]) => what);
   assert.deepEqual(left, [], "these named credentials survive redact()");
+  const leftCrlf = NAMED.filter(([, text, parts]) => parts.some((p) => G.redact(text.replace(/\n/g, "\r\n")).includes(p))).map(([what]) => what);
+  assert.deepEqual(leftCrlf, [], "the same fixtures with Windows line endings");
   for (const [, text] of NAMED) assert.equal(G.redact(G.redact(text)), G.redact(text), "redacting twice changes nothing");
   for (const k of KEPT) assert.equal(G.redact(k), k, "ordinary text is left alone");
   assert.match(G.redact(NAMED[2][1]), /next: kept-value/, "the line after a YAML block is kept");
@@ -105,13 +107,16 @@ test("fuzz: a random secret in each named shape never appears in the output", ()
       const alphabet = /escaped JSON|"key"|Cookie|X-Api|url|mid-sentence|export|Authorization|block|own line|-H/.test(shape) ? PLAIN : PUNCT;
       const words = Array.from({ length: quotedShape ? 2 + Math.floor(r() * 3) : 1 }, () => word(alphabet, 6 + Math.floor(r() * 9)));
       const text = `${pick(["", "note: ", "closed checkout "])}${make(pick(KEYS), words)}${pick(["", "\n", " ."])}`;
-      const out = G.redact(text);
-      n++;
-      const seen = words.filter((w) => out.includes(w));
-      if (seen.length && fails.length < 12) fails.push({ shape, text, out, seen });
+      // every case twice: Unix line endings, and the same text with Windows line endings
+      for (const [ending, t] of [["LF", text], ["CRLF", text.replace(/\n/g, "\r\n")]]) {
+        const out = G.redact(t);
+        n++;
+        const seen = words.filter((w) => out.includes(w));
+        if (seen.length && fails.length < 12) fails.push({ shape, ending, text: t, out, seen });
+      }
     }
   }
-  assert.ok(n >= 2500);
+  assert.ok(n >= 5000);
   assert.deepEqual(fails, [], "secrets that survived (first 12)");
 });
 
