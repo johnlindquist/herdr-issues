@@ -13,6 +13,7 @@ const judge = /^GATHERER: (\w+)/.exec(req.system)?.[1];
 const gather = !planner && !judge && /context brief/.test(req.system);
 const NAME = planner ? "PLAN" : judge ? judge.toUpperCase() : gather ? "CODE" : "TRIAGE";
 if (process.env[`FAKE_SLOW_${NAME}`]) await new Promise((r) => setTimeout(r, Number(process.env[`FAKE_SLOW_${NAME}`])));
+if (process.env.FAKE_DONE) (await import("node:fs")).appendFileSync(process.env.FAKE_DONE, `${NAME} finished\n`); // a call that was not cancelled gets here
 if (process.env.FAKE_FAIL || process.env[`FAKE_FAIL_${NAME}`] || (gather && process.env.FAKE_BRIEF_FAIL)) { process.stderr.write("model down\n"); process.exit(2); }
 if (planner) process.stdout.write(process.env.FAKE_PLAN ?? JSON.stringify({ gatherers: [{ name: "code", look_for: "the checkout check", reason: "the reports name checkout" }] }));
 else if (judge) process.stdout.write(process.env[`FAKE_FINDINGS_${NAME}`] ?? JSON.stringify({ findings: [] }));
