@@ -17,7 +17,7 @@ import { callModel } from "./triage.mjs";
 import { hashOf } from "./issue.mjs";
 import { raw, redactRaw, redact } from "./redact.mjs";
 import { fenced, DATA_NOTE, ORDER } from "./fence.mjs";
-import { safePath, collect, gatherInput, gatherSystem, parseBrief, briefText, excerptsFor, termsOf, GatherFailed, DEFAULT_GATHER_INSTRUCTION } from "./gather.mjs";
+import { safePath, collect, gatherEvidence, gatherSystem, parseBrief, briefText, excerptsFor, termsOf, GatherFailed, DEFAULT_GATHER_INSTRUCTION } from "./gather.mjs";
 
 /** @typedef {{ cite: string, text: string }} Item something code fetched; `cite` is how a finding points at it */
 /** @typedef {{ items: Item[], searched: string[] }} Fetched */
@@ -416,15 +416,27 @@ Decide which items are relevant to THIS issue and say why in one line each.
 
 Reply with JSON only: {"findings": [{"text": "...", "cites": ["..."]}]}`;
 
-/** What a judging gatherer reads. */
-export function findingsInput(issue, fetched, lookFor = "") {
-  const head = [`ISSUE: ${issue.title}`, ...(lookFor ? [`LOOK FOR (from the planner): ${clip(lookFor, 240)}`] : []), "REPORTS:", ...issue.reports.slice(0, 8).map((r) => `- (${r.id}) ${r.title}: ${clip(r.body, 300)}`), "", `ITEMS (${fetched.items.length}; cite by the id in square brackets):`];
-  const lines = fetched.items.map((i) => `[${i.cite}] ${i.text}`);
-  return `${[...head, ...lines].join("\n").slice(0, SWARM_LIMITS.inputChars)}\n\nReturn the JSON now.`;
+/** What a judging gatherer reads, and exactly which items are in it. */
+export function findingsEvidence(issue, fetched, lookFor = "") {
+  const head = [`ISSUE: ${issue.title}`, ...(lookFor ? [`LOOK FOR (from the planner): ${clip(lookFor, 240)}`] : []), "REPORTS:", ...issue.reports.slice(0, 8).map((r) => `- (${r.id}) ${r.title}: ${clip(r.body, 300)}`), ""].join("\n");
+  // Whole items up to the size limit, never part of one; an item that did not fit was not sent and cannot be cited.
+  const items = [];
+  let size = head.length + 80;
+  for (const i of fetched.items) {
+    const line = `[${i.cite}] ${i.text}`;
+    if (size + line.length + 1 > SWARM_LIMITS.inputChars) break;
+    items.push(i);
+    size += line.length + 1;
+  }
+  const text = `${head}\nITEMS (${items.length}; cite by the id in square brackets):\n${items.map((i) => `[${i.cite}] ${i.text}`).join("\n")}\n\nReturn the JSON now.`;
+  return { text, items };
 }
 
-/** Boundary check, pure: a finding is kept only when it cites something and every cite is an item code fetched. */
-export function parseFindings(text, items) {
+/** What a judging gatherer reads (the text alone). */
+export const findingsInput = (issue, fetched, lookFor = "") => findingsEvidence(issue, fetched, lookFor).text;
+
+/** Boundary check, pure: a finding is kept only when it cites something and every cite is an item the model was SENT (`items`: findingsEvidence().items). `all`: everything fetched, only to say why a cite was refused. */
+export function parseFindings(text, items, all = items) {
   const cleaned = String(text ?? "").replace(/```(?:json)?/g, "");
   const a = cleaned.indexOf("{");
   const b = cleaned.lastIndexOf("}");
@@ -436,13 +448,14 @@ export function parseFindings(text, items) {
     throw new GatherFailed("the model's reply was not valid JSON");
   }
   const known = new Set(items.map((i) => i.cite));
+  const fetched = new Set(all.map((i) => i.cite));
   const findings = [];
   const dropped = [];
   for (const raw of Array.isArray(v?.findings) ? v.findings.slice(0, 8) : []) {
     const f = { text: clip(raw?.text, 400), cites: Array.isArray(raw?.cites) ? raw.cites.map((c) => String(c).trim().replace(/^\[|\]$/g, "")).filter(Boolean).slice(0, 6) : [] };
     if (!f.text) continue;
     const bad = !f.cites.length ? "no citation" : f.cites.find((c) => !known.has(c));
-    if (bad) dropped.push({ ...f, reason: bad === "no citation" ? bad : `not something that was fetched: ${bad}` });
+    if (bad) dropped.push({ ...f, reason: bad === "no citation" ? bad : fetched.has(bad) ? `not something that was sent to the model: ${bad}` : `not something that was fetched: ${bad}` });
     else if (ORDER.test(f.text)) dropped.push({ ...f, reason: "reads as an instruction, not a finding" }); // a real citation does not make an order a finding
     else if (findings.length < SWARM_LIMITS.findings) findings.push(f);
   }
@@ -530,10 +543,11 @@ function ask(ctx, system, input) {
 }
 
 async function runCode(g, ctx) {
-  const reply = await ask(ctx, gatherSystem(ctx.instruction), `${ctx.lookFor ? `LOOK FOR (from the planner): ${clip(ctx.lookFor, 240)}\n\n` : ""}${gatherInput(ctx.issue, ctx.candidates)}`);
-  const brief = parseBrief(reply.text, ctx.candidates);
+  const evidence = gatherEvidence(ctx.issue, ctx.candidates); // the bounded text, and exactly what is in it
+  const reply = await ask(ctx, gatherSystem(ctx.instruction), `${ctx.lookFor ? `LOOK FOR (from the planner): ${clip(ctx.lookFor, 240)}\n\n` : ""}${evidence.text}`);
+  const brief = parseBrief(reply.text, evidence.sent, ctx.candidates); // citations are checked against what was sent, not against everything gathered
   const findings = ["reported", "where", "tests", "unknown"].flatMap((s) => brief[s]);
-  return { state: "findings", findings, dropped: brief.dropped, searched: [`${ctx.candidates.reports.length} reports, ${ctx.candidates.files.length} code files, ${ctx.candidates.tests.length} test files`], fetched: ctx.candidates.files.length + ctx.candidates.tests.length + ctx.candidates.reports.length, brief, text: briefText(brief), reply };
+  return { state: "findings", findings, dropped: brief.dropped, searched: [`${ctx.candidates.reports.length} reports, ${ctx.candidates.files.length} code files, ${ctx.candidates.tests.length} test files`, ...(evidence.cut ? [`the size limit cut the model's input: it was sent ${evidence.sent.reports.length} reports, ${evidence.sent.files.length} code files and ${evidence.sent.tests.length} test files`] : [])], fetched: ctx.candidates.files.length + ctx.candidates.tests.length + ctx.candidates.reports.length, brief, text: briefText(brief), reply };
 }
 
 /** Fetch (code), judge (model), check (code). What was fetched is used for the check and then dropped: only kept findings leave here. */
@@ -541,9 +555,11 @@ async function runJudge(g, ctx) {
   const fetched = await g.fetch(ctx);
   const read = fetched.read ? { read: fetched.read } : {};
   if (!fetched.items.length) return { state: "nothing", findings: [], dropped: [], searched: fetched.searched, fetched: 0, reply: null, ...read };
-  const reply = await ask(ctx, findingsSystem(g.name), findingsInput(ctx.issue, fetched, ctx.lookFor));
-  const { findings, dropped } = parseFindings(reply.text, fetched.items);
-  return { state: findings.length ? "findings" : "nothing", findings, dropped, searched: fetched.searched, fetched: fetched.items.length, reply, ...read };
+  const evidence = findingsEvidence(ctx.issue, fetched, ctx.lookFor);
+  const reply = await ask(ctx, findingsSystem(g.name), evidence.text);
+  const { findings, dropped } = parseFindings(reply.text, evidence.items, fetched.items); // citations are checked against the items that were sent
+  const searched = evidence.items.length < fetched.items.length ? [...fetched.searched, `${evidence.items.length} of ${fetched.items.length} items fit the model's input; the rest were not sent`] : fetched.searched;
+  return { state: findings.length ? "findings" : "nothing", findings, dropped, searched, fetched: fetched.items.length, reply, ...read };
 }
 
 /**

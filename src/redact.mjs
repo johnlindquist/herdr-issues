@@ -68,7 +68,7 @@ function lineStart(s, at) {
  * a JSON string), a YAML block scalar (| or >), a header (the rest of the line), a value on a line
  * of its own (the rest of the line), otherwise up to the next whitespace.
  */
-function valueSpan(s, keyStart, i, tok) {
+function valueSpan(s, keyStart, i, tok, spoken = false) {
   let p = i;
   for (let n = 0; n < 4 && p < s.length && "\\\"'`])".includes(s[p]); n++) p++; // the name's own closing quote or bracket
   while (p < s.length && SP(s[p])) p++;
@@ -77,7 +77,7 @@ function valueSpan(s, keyStart, i, tok) {
   else if (s[p] === ":" || s[p] === "=") sep = s[p];
   if (sep) p += sep.length;
   else {
-    if (p === i || !SPOKEN.test(tok)) return null;
+    if (p === i || !(spoken || SPOKEN.test(tok))) return null;
     const w = s.startsWith("is", p) ? 2 : s.startsWith("was", p) ? 3 : 0;
     if (!w || !SP(s[p + w] ?? "")) return null;
     p += w;
@@ -119,14 +119,15 @@ function valueSpan(s, keyStart, i, tok) {
     const start = p + opener.length;
     let close = -1;
     if (opener.length > 1) close = s.indexOf(opener, start);
-    else for (let k = start, n = 0; k < s.length && n < 8192; k++, n++) {
-      if (s[k] === "\\") k++, n++;
+    else for (let k = start; k < s.length; k++) {
+      if (s[k] === "\\") k++;
       else if (s[k] === q) {
         close = k;
         break;
       }
     }
-    return close >= 0 ? { from: p, to: close + opener.length } : { from: p, to: eol(s, p) }; // never closed: the rest of the line
+    // However far away the closing quote is, the value runs to it. Never closed: everything that follows goes (fail closed).
+    return { from: p, to: close >= 0 ? close + opener.length : s.length };
   }
   // on a line of its own (YAML, an env file): the rest of the line, so a value with spaces goes whole
   const ls = lineStart(s, keyStart);
@@ -136,6 +137,14 @@ function valueSpan(s, keyStart, i, tok) {
   return { from: p, to: e };
 }
 
+/** Is this word the second half of a two-word credential name? Looks back at most 12 characters. */
+function secondWord(s, at, tok) {
+  const w = tok.toLowerCase();
+  if (w !== "key" && w !== "phrase" && w !== "word" && w !== "code") return false;
+  const before = s.slice(Math.max(0, at - 12), at).toLowerCase();
+  return w === "key" ? /(?:^|[^a-z])(?:api|access|private|secret|auth|signing|encryption|license|ssh)[ \t]$/.test(before) : /(?:^|[^a-z])pass[ \t]$/.test(before);
+}
+
 function redactNamed(s) {
   const out = [];
   let last = 0;
@@ -143,8 +152,10 @@ function redactNamed(s) {
   let m;
   while ((m = word.exec(s))) {
     const tok = m[0];
-    if (tok.length > 120 || !CRED.test(tok)) continue;
-    const v = valueSpan(s, m.index, word.lastIndex, tok);
+    if (tok.length > 120) continue;
+    const two = secondWord(s, m.index, tok); // "api key", "access key", "pass phrase": a name in two words
+    if (!two && !CRED.test(tok)) continue;
+    const v = valueSpan(s, m.index, word.lastIndex, tok, two);
     if (!v || v.to <= v.from) continue;
     out.push(s.slice(last, v.from), R);
     last = v.to;
@@ -190,7 +201,8 @@ const SHAPES = [
  * length afterwards: cutting first can leave half a secret that no rule recognises.
  */
 export function redact(text) {
-  let s = String(text ?? "");
+  // Line endings first: Windows (CRLF) and old Mac (CR) text is read as LF, so every rule below sees one kind of line.
+  let s = String(text ?? "").replace(/\r\n?/g, "\n");
   // private key blocks, closed or cut off
   s = s.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, R);
   s = redactNamed(s);

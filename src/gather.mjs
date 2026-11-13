@@ -288,40 +288,65 @@ export function gatherSystem(name = DEFAULT_GATHER_INSTRUCTION) {
   return s;
 }
 
-/** The evidence as the model reads it. Everything in it can be cited; nothing else can. @param {{ title: string, why: string|null }} issue @param {Candidates} c */
-export function gatherInput(issue, c) {
-  const out = [`ISSUE: ${issue.title}`];
-  if (issue.why) out.push(`The Issues widget's one-line why (written by a model, not evidence): ${issue.why}`);
-  out.push("", `REPORTS (${c.reports.length}; cite by id):`);
-  for (const r of c.reports) out.push(`[${r.id}] ${r.kind}${r.author ? `, from ${r.author}` : ""}${r.created_at ? `, ${r.created_at.slice(0, 10)}` : ""}: ${r.title}: ${r.body.replace(/\n/g, " / ")}`);
-  if (c.missing.length) out.push("", `NAMED IN A REPORT BUT NOT IN THE PROJECT (do not cite): ${c.missing.join(", ")}`);
+/**
+ * The evidence as the model reads it, and exactly what is in it. The text is bounded: whole lines
+ * are added until the size limit, never part of a line, and what did not fit is left out. `sent`
+ * holds only the reports, file lines and commits whose lines are in the text; citations are
+ * checked against `sent`, so nothing the limit cut off can be cited.
+ * @param {{ title: string, why: string|null }} issue @param {Candidates} c
+ * @returns {{ text: string, sent: any, cut: boolean }}
+ */
+export function gatherEvidence(issue, c) {
+  /** @type {{ text: string, report?: any, file?: any, line?: any, commit?: any }[]} */
+  const out = [{ text: `ISSUE: ${issue.title}` }];
+  if (issue.why) out.push({ text: `The Issues widget's one-line why (written by a model, not evidence): ${issue.why}` });
+  out.push({ text: "" }, { text: `REPORTS (${c.reports.length}; cite by id):` });
+  for (const r of c.reports) out.push({ report: r, text: `[${r.id}] ${r.kind}${r.author ? `, from ${r.author}` : ""}${r.created_at ? `, ${r.created_at.slice(0, 10)}` : ""}: ${r.title}: ${r.body.replace(/\n/g, " / ")}` });
+  if (c.missing.length) out.push({ text: "" }, { text: `NAMED IN A REPORT BUT NOT IN THE PROJECT (do not cite): ${c.missing.join(", ")}` });
   const section = (label, list) => {
-    out.push("", `${label}:`);
-    if (!list.length) out.push("(none found)");
+    out.push({ text: "" }, { text: `${label}:` });
+    if (!list.length) out.push({ text: "(none found)" });
     for (const f of list) {
-      out.push(`== ${f.path} (${f.lines} lines; ${f.why.join("; ")})`);
+      out.push({ text: `== ${f.path} (${f.lines} lines; ${f.why.join("; ")})` });
       let prev = 0;
       for (const l of f.shown) {
-        if (prev && l.n > prev + 1) out.push("   …");
-        out.push(`${f.path}:${l.n}| ${l.text}`);
+        if (prev && l.n > prev + 1) out.push({ text: "   …" });
+        out.push({ file: f, line: l, text: `${f.path}:${l.n}| ${l.text}` });
         prev = l.n;
       }
     }
   };
   section(`CODE (excerpts; cite as path:line; searched for ${c.terms.map((t) => `"${t}"`).join(", ") || "no distinctive terms"})`, c.files);
   section("TESTS NEAR THAT CODE (excerpts; cite as path:line)", c.tests);
-  out.push("", "RECENT COMMITS TOUCHING THOSE FILES (cite as commit:<sha>):");
-  if (!c.commits.length) out.push("(none found)");
-  for (const k of c.commits) out.push(`commit:${k.sha} ${k.date} ${k.subject} (${k.files.join(", ")})`);
-  if (c.notes.length) out.push("", `NOTES FROM THE SCRIPT: ${c.notes.join("; ")}`);
-  let text = out.join("\n");
-  if (text.length > LIMITS.inputChars) text = text.slice(0, LIMITS.inputChars) + "\n[cut at the size limit]";
-  return `${text}\n\nReturn the JSON now.`;
+  out.push({ text: "" }, { text: "RECENT COMMITS TOUCHING THOSE FILES (cite as commit:<sha>):" });
+  if (!c.commits.length) out.push({ text: "(none found)" });
+  for (const k of c.commits) out.push({ commit: k, text: `commit:${k.sha} ${k.date} ${k.subject} (${k.files.join(", ")})` });
+  if (c.notes.length) out.push({ text: "" }, { text: `NOTES FROM THE SCRIPT: ${c.notes.join("; ")}` });
+  // Whole lines up to the limit; the first line that does not fit ends it.
+  const kept = [];
+  let size = 0;
+  let cut = false;
+  for (const line of out) {
+    if (size + line.text.length + 1 > LIMITS.inputChars) {
+      cut = true;
+      break;
+    }
+    kept.push(line);
+    size += line.text.length + 1;
+  }
+  const shown = new Map();
+  for (const k of kept) if (k.file) shown.set(k.file, [...(shown.get(k.file) ?? []), k.line]);
+  const part = (list) => list.filter((f) => shown.has(f)).map((f) => ({ ...f, shown: shown.get(f) }));
+  const sent = { ...c, reports: kept.filter((k) => k.report).map((k) => k.report), files: part(c.files), tests: part(c.tests), commits: kept.filter((k) => k.commit).map((k) => k.commit) };
+  return { text: `${kept.map((k) => k.text).join("\n")}${cut ? "\n[cut at the size limit]" : ""}\n\nReturn the JSON now.`, sent, cut };
 }
+
+/** The evidence text alone. */
+export const gatherInput = (issue, c) => gatherEvidence(issue, c).text;
 
 // ---------- what the model says, checked (pure) ----------
 
-/** What a citation may point at. A line counts only when the model was shown it. @param {Candidates} c */
+/** What a citation may point at. A line counts only when the model was shown it. Pass the candidates that were SENT (gatherEvidence().sent), not everything gathered. @param {Candidates} c */
 export function resolverFor(c) {
   const lines = new Map();
   for (const f of [...c.files, ...c.tests]) lines.set(f.path, new Set(f.shown.map((l) => l.n)));
@@ -356,9 +381,9 @@ const HEDGE = /\b(likely|may|might|possibly|could|appears?|seems?|unclear|unknow
 /**
  * Boundary check on the model's brief. Pure: needs no model, no files, no app.
  * A claim is kept only when every citation resolves; dropped claims are returned with the reason.
- * @param {string} text @param {Candidates} candidates @returns {Brief}
+ * @param {string} text @param {Candidates} candidates what the model was SENT (gatherEvidence().sent) @param {Candidates} [all] everything gathered, only to say why a cite was refused @returns {Brief}
  */
-export function parseBrief(text, candidates) {
+export function parseBrief(text, candidates, all = candidates) {
   const cleaned = String(text ?? "").replace(/```(?:json)?/g, "");
   const a = cleaned.indexOf("{");
   const b = cleaned.lastIndexOf("}");
@@ -370,6 +395,7 @@ export function parseBrief(text, candidates) {
     throw new GatherFailed("the model's brief was not valid JSON");
   }
   const resolver = resolverFor(candidates);
+  const everything = all !== candidates ? resolverFor(all) : null;
   /** @type {Brief} */
   const brief = { reported: [], where: [], tests: [], unknown: [], dropped: [] };
   for (const s of SECTIONS) {
@@ -382,9 +408,10 @@ export function parseBrief(text, candidates) {
         continue;
       }
       const res = claim.cites.map((c) => resolveCite(c, resolver));
-      const bad = res.find((r) => !r.ok);
-      if (bad) {
-        drop(bad.reason);
+      const at = res.findIndex((r) => !r.ok);
+      if (at >= 0) {
+        // Gathered, but the size limit kept it out of the input: the model cannot have read it.
+        drop(everything && resolveCite(claim.cites[at], everything).ok ? `not in what the model was sent (cut at the size limit): ${claim.cites[at]}` : res[at].reason);
         continue;
       }
       if (NEEDS[s] && !res.some((r) => r.kind === NEEDS[s])) {
