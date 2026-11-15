@@ -15,8 +15,9 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
+import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
+import { createFrame, frameParts } from "./frame.js";
 import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
@@ -98,13 +99,21 @@ export default class Issues extends View {
     this.gathering = new Set(); // issue ids whose context is being gathered right now
     this.view = null; // the open brief: { id, doc, top }
     this.progress = {}; // issue id -> the plan and each gatherer's state, while its context is being gathered
+    // Title bar, move, pop out, close: the shared rules in frame.js. Only the copy on screen works.
+    this.frame = createFrame({ mod: NAME, h: { layout, run, shared, setShared, openOverlay, closeOverlay, props } });
+    const carried = this.frame.start();
+    if (carried) {
+      this.top = carried.top ?? 0;
+      if (typeof carried.collapsed === "boolean") this.collapsed = carried.collapsed;
+    }
+    if (this.frame.floating) this.handle.focus();
     this.tick(cx);
     cx.timer.every(600, (cx) => this.poll(cx));
     cx.timer.every(3000, (cx) => this.tick(cx));
     // Read again every `refreshSeconds` (a setting). Cheap when nothing changed: the model is only asked about changed issues.
     this.lastAuto = Date.now();
     cx.timer.every(5000, (cx) => {
-      if (!this.root || Date.now() - this.lastAuto < refreshMs(this.docs[this.root])) return;
+      if (!this.root || !this.frame.active() || Date.now() - this.lastAuto < refreshMs(this.docs[this.root])) return;
       this.lastAuto = Date.now();
       this.refresh(this.root, cx, false);
     });
@@ -140,8 +149,25 @@ export default class Issues extends View {
     if (t) run("pane.focus", t);
   }
 
+  // What the next copy (the window, or the docked block again) starts from.
+  viewState() {
+    return { sel: null, top: this.top, collapsed: this.collapsed };
+  }
+
+  close() {
+    this.frame.closed();
+  }
+
+  // Takes the keyboard without expanding or scrolling (a press on the title bar).
+  takeKeyboardQuietly() {
+    const f = focused();
+    if (f && (f.pane || f.terminal)) this.before = { pane: f.pane, terminal: f.terminal };
+    this.handle.focus();
+  }
+
   setCollapsed(on) {
     this.collapsed = on;
+    if (this.frame.floating) return; // a window has no column to give its height to
     applyCollapse({ mod: NAME, collapsed: on, storage: localStorage, layout, run });
   }
 
@@ -162,6 +188,8 @@ export default class Issues extends View {
   }
 
   tick(cx) {
+    this.frame.check();
+    if (!this.frame.active()) return; // hidden or closed: no reading, no model calls
     const f = focused();
     const cwd = f?.cwd;
     if (!cwd) return;
@@ -254,6 +282,8 @@ export default class Issues extends View {
 
   /** Keys and commands share one path. Returns true when handled. */
   command(k, cx) {
+    if (k === "escape" && this.frame.dragging() === "mine") return (this.frame.dragCancel(), true);
+    if (this.frame.command(k, this.viewState())) return true;
     const doc = this.docs[this.root];
     const list = this.items(doc);
     if (this.view && !this.collapsed) {
@@ -509,6 +539,7 @@ export default class Issues extends View {
           key("col", "−", "Collapse", null, () => this.setCollapsed(true)),
           key("esc", "Esc", "Back", null, () => this.giveBack()),
           key("ref", "R", "Refresh", null, (cx) => this.root && this.refresh(this.root, cx, true)),
+          ...(this.frameLegend ?? []).map(([k, label]) => key(`frame-${label}`, k, label, null, null)),
         ];
     return v_flex()
       .flex_none()
@@ -633,6 +664,8 @@ export default class Issues extends View {
     const range = this.rangeText ? `${this.rangeText} · ` : "";
     const footer = this.notice ?? range + (busy ? "Updating…" : doc?.updated_at ? `Read ${ago(doc.checked_at ?? doc.updated_at)}` : "");
 
+    const parts = frameParts({ div, h_flex, v_flex }, t, this.frame, tip, () => this.viewState());
+    this.frameLegend = parts.legend;
     const header = h_flex()
       .id("issues-header")
       .px(14)
@@ -644,6 +677,11 @@ export default class Issues extends View {
       .hover((s) => s.bg(t.hover))
       .tooltip(this.collapsed ? `${tip("Expand Issues", "−")} · ${tip("Focus Issues", FOCUS_KEY)}` : `${tip("Collapse Issues", "−")} · ${tip("Focus Issues", FOCUS_KEY)}`)
       .on_click(() => this.setCollapsed(!this.collapsed))
+      // Pressing the bar starts a drag: release over another widget to land above or below it.
+      .on_mouse_down("left", () => {
+        if (!this.handle.is_focused()) this.takeKeyboardQuietly();
+        this.frame.dragStart();
+      })
       .child(div().flex_none().text_size(10).text_color(t.dim).child(this.collapsed ? "▸" : "▾"))
       .child(div().flex_none().text_size(11.5).font_medium().text_color(hasKeys ? t.accent : t.dim).child(TITLE))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(this.collapsed ? `· ${this.summaryLine(doc, busy)}` : name))
@@ -665,7 +703,8 @@ export default class Issues extends View {
             })
             .child(busy ? svg(ICON("spinner")).size(13).spin(900) : svg(ICON("refresh")).size(13)),
         ),
-      );
+      )
+      .children(parts.buttons);
 
     const shell = v_flex()
       .id("triage-root")
@@ -680,7 +719,11 @@ export default class Issues extends View {
       .border_color(t.border)
       .when(hasKeys, (el) => el.border_t(2).border_color(t.accent))
       .text_size(13)
-      .child(header);
+      .relative()
+      .on_mouse_up("left", () => this.frame.dragCancel())
+      .child(header)
+      .when(Boolean(parts.note), (el) => el.child(parts.note))
+      .when(Boolean(parts.drop), (el) => el.child(parts.drop));
     if (this.collapsed) return shell;
 
     return shell

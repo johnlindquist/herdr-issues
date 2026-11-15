@@ -10,7 +10,7 @@ for tool in herdr-app node; do
   command -v "$tool" >/dev/null 2>&1 || { echo "install: $tool was not found on your PATH. See Requirements in the README." >&2; exit 1; }
 done
 mkdir -p "$mods/triage/icons" "$mods/triage/src" "$mods/triage-menu"
-cp "$src"/main.js "$src"/nav.js "$src"/surface.js "$src"/triage.mjs "$src"/mod.json "$src"/rules.md "$mods/triage/"
+cp "$src"/main.js "$src"/nav.js "$src"/frame.js "$src"/surface.js "$src"/triage.mjs "$src"/mod.json "$src"/rules.md "$mods/triage/"
 cp "$src"/src/*.mjs "$mods/triage/src/"
 cp "$src"/icons/*.svg "$mods/triage/icons/"
 cp "$src"/menu/main.js "$src"/menu/mod.json "$mods/triage-menu/"

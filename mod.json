@@ -1,1 +1,1 @@
-{ "place": "right", "size": 320, "title": "Issues", "focusable": true }
+{ "place": "right", "size": 320, "title": "Issues", "focusable": true, "overlay": { "kind": "window", "key": "triage", "keep": true, "width": 380, "height": 620 } }
