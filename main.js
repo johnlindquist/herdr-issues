@@ -17,7 +17,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
-import { disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -37,7 +37,6 @@ const windowHeight = () => {
     return 900;
   }
 };
-const REFRESH_MS = 2 * 60_000; // cheap when nothing changed: the model is only asked about changed issues
 // Fixed row heights: the virtual list places rows by these, so rows clip their text to fit
 // (the full text is in the row's tooltip, Copy and the right-click menu).
 const H = { section: 28, pressing: 96, other: 60, status: 18, line: 16 };
@@ -102,7 +101,13 @@ export default class Issues extends View {
     this.tick(cx);
     cx.timer.every(600, (cx) => this.poll(cx));
     cx.timer.every(3000, (cx) => this.tick(cx));
-    cx.timer.every(REFRESH_MS, (cx) => this.root && this.refresh(this.root, cx, false));
+    // Read again every `refreshSeconds` (a setting). Cheap when nothing changed: the model is only asked about changed issues.
+    this.lastAuto = Date.now();
+    cx.timer.every(5000, (cx) => {
+      if (!this.root || Date.now() - this.lastAuto < refreshMs(this.docs[this.root])) return;
+      this.lastAuto = Date.now();
+      this.refresh(this.root, cx, false);
+    });
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
@@ -681,6 +686,7 @@ export default class Issues extends View {
     return shell
       .when(Boolean(doc?.headline), (el) => el.child(div().id("issues-headline").px(14).mb(6).h(38).flex_none().overflow_hidden().whitespace_normal().text_size(12).text_color(t.foreground).tooltip(doc.headline).child(doc.headline)))
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
+      .when(Boolean(settingsProblemLine(doc)), (el) => el.child(div().id("issues-settings-problem").px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(t.blocked).tooltip((doc?.settings?.problems ?? []).join("\n")).child(settingsProblemLine(doc))))
       .child(this.view ? this.brief(t) : this.list(t, rows, item, hasKeys))
       .when(Boolean(doc), (el) => el.child(this.legend(t, this.actionItem(doc))))
       .child(
@@ -694,7 +700,7 @@ export default class Issues extends View {
           .text_size(11)
           .text_color(t.dim)
           .child(div().flex_1().truncate().child(footer))
-          .child(div().flex_none().child(doc ? `${String(doc.model).split("/").pop().replace(/^claude-/, "")}${cost ? ` · $${cost.toFixed(4)}` : ""}` : "")),
+          .child(div().id("issues-model").flex_none().tooltip(doc ? modelTip(doc) : "").child(doc ? `${modelLabel(doc)}${cost ? ` · $${cost.toFixed(4)}` : ""}` : "")),
       );
   }
 }

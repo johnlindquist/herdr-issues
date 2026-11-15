@@ -9,5 +9,6 @@ tsc -p menu/jsconfig.json
 for f in triage.mjs src/*.mjs main.js menu/main.js; do node --check "$f"; done
 node --check nav.js
 node --check surface.js
-node --disable-warning=ExperimentalWarning --test test/*.test.mjs
+# The tests never read your own settings file.
+HERDR_ISSUES_CONFIG=/nonexistent/herdr-issues.json node --disable-warning=ExperimentalWarning --test test/*.test.mjs
 echo "fence: ok"

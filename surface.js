@@ -96,6 +96,29 @@ export function settingsLine(doc) {
   return doc?.conversations === "on" ? "Past conversations: on for this project (text only, redacted)" : null;
 }
 
+/** The footer's model, short: "haiku-4-5", with the thinking level when it is on. */
+export function modelLabel(doc) {
+  const short = String(doc?.model ?? "").split("/").pop().replace(/^claude-/, "");
+  const thinking = doc?.settings?.thinking;
+  return thinking && thinking !== "off" ? `${short} · thinking ${thinking}` : short;
+}
+
+/** The footer model's tooltip: the full id, where the setting came from, and how to change it. */
+export function modelTip(doc) {
+  const from = doc?.settings?.model_from;
+  return `Model: ${doc?.model ?? "unknown"}${from ? ` (${from})` : ""}\nChange it: node triage.mjs config set model <provider/id>`;
+}
+
+/** A line shown while a settings file has a problem: the first problem, and how many more. Defaults (or the weaker file) are in use for those entries. */
+export function settingsProblemLine(doc) {
+  const p = doc?.settings?.problems ?? [];
+  if (!p.length) return null;
+  return `Settings: ${p[0]}${p.length > 1 ? ` (and ${p.length - 1} more: run config)` : ""}. The default is used instead.`;
+}
+
+/** How often the widget reads again, from the settings (120 s until a read says otherwise). */
+export const refreshMs = (doc) => Math.max(30, Number(doc?.settings?.refreshSeconds) || 120) * 1000;
+
 /** Word wrap to a character width; a word longer than the width is cut. */
 export function wrap(text, width) {
   const out = [];
