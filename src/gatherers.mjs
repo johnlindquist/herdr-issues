@@ -471,7 +471,7 @@ export const GATHERERS = [
   { name: "history", label: "History", outside: false, about: "commits, blame, earlier cards", fetch: fetchHistory },
   { name: "github", label: "GitHub", outside: true, about: "outside: issues, PRs, related projects (read-only)", fetch: fetchGithub },
   { name: "packages", label: "Packages", outside: true, about: "outside: installed against latest, release notes", fetch: fetchPackages },
-  { name: "conversations", label: "Past conversations", outside: true, about: "this project's earlier Pi conversations: text only, redacted, read-only", fetch: fetchConversations },
+  { name: "conversations", label: "Past conversations", outside: true, about: "this project's earlier Pi conversations, for decisions already made and things already tried: text only, redacted, read-only", fetch: fetchConversations },
 ];
 
 // ---------- the planner: one small-model call decides which gatherers start and what each looks for ----------
@@ -635,7 +635,7 @@ export function stateLine(s) {
 function pastCount(dir) {
   try {
     const n = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length;
-    return n ? `past Pi conversations on file for this project's folder: ${n}` : "this project has no past Pi conversations";
+    return n ? `past Pi conversations on file for this project's folder (they can be searched for the issue's words): ${n}` : "this project has no past Pi conversations";
   } catch {
     return "this project has no past Pi conversations";
   }

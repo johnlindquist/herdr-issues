@@ -278,7 +278,7 @@ test("past conversations are on by default; off turns them off everywhere (saved
   assert.deepEqual(g.out.states.map((s) => s.name), ["code", "conversations"], "with no setting, past conversations may start");
   assert.equal(g.out.plan.not_started.find((n) => n.name === "conversations"), undefined);
   assert.deepEqual(g.out.conversations, { mode: "on", read: { sessions: 1, entries: 1, found: true } });
-  assert.match(fs.readFileSync(log, "utf8").split("\n")[0], /conversations: this project's earlier Pi conversations/, "the planner is offered it like any other gatherer");
+  assert.match(fs.readFileSync(log, "utf8").split("\n")[0], /- conversations: this project's earlier Pi conversations, for decisions already made/, "the planner is offered it like any other gatherer");
   assert.match(fs.readFileSync(log, "utf8"), /DEFAULT-ON-SENTINEL/, "the matching text reached the gatherer's model call");
   const shown = cli(["show", "--root", root], env).out;
   assert.deepEqual([shown.conversations, shown.conversations_from], ["on", "default"]);

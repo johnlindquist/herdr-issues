@@ -372,6 +372,8 @@ npm install
 npm run check
 ```
 
+Past conversations on by default (2026-11-15): the tests cover the default, each place that can say off (saved, environment, your file, the project's file, a flag), off winning over on, and that nothing unredacted reaches a model call, the cache, a receipt or the prompt. One real run with `claude-haiku-4-5` against a fresh clone of RentAPlace after `npm run seed`, with a scratch state folder and a scratch Pi sessions folder holding one made-up conversation for that project (three messages, one with a made-up password in it): with no setting, the plan started Code, History and Past conversations; the brief had two Past conversations lines, each citing `session:<time>#<entry>`, "read 1 conversation", 15 cited lines in 11 s for $0.018; the made-up password was in no output and no state file. After `config --conversations off` the same gather listed "Past conversations: not started — off", read nothing, and the brief said "Past conversations were not read (off for this project)". Not run: the widget's line and tooltip in a Herdr window.
+
 Moving, popping out and closing (2026-11-15): `frame.js` has 12 tests that run without Herdr (where a drop lands, how the layout is rewritten, what is remembered, one engine). In a second, separate Herdr window on a duplicated layout, through commands, with the layout read back each time: reorder, move to the other side and back, pop out (window open, docked place hidden), dock back, close and reopen with `mod.open`, docked and floating. Not run: a real drag with the pointer, and the Shift keys pressed by hand.
 
 ## License
