@@ -264,29 +264,69 @@ test("finding 7: two conversations started in the same minute never share a cita
   for (const i of got.items) assert.match(i.cite, /^session:2026-11-01T10:00:\d\d\S*#2$/);
 });
 
-test("past conversations ship off: read only when the project's setting says on, and the widget says when it is on", () => {
+test("past conversations are on by default; off turns them off everywhere (saved, environment, user file, project file, flag), off wins, and the widget says which", () => {
   const root = project();
   const first = cli(["refresh", "--root", root]);
   const agent = path.join(first.state, "agent");
-  session(agent, root, "2026-11-01T10-00-00-000Z_aaaa1111", [["user", "closed checkout DEFAULT-OFF-SENTINEL"]]);
+  session(agent, root, "2026-11-01T10-00-00-000Z_aaaa1111", [["user", "closed checkout DEFAULT-ON-SENTINEL"]]);
   const log = path.join(first.state, "model.log");
-  const env = { TRIAGE_STATE: first.state, FAKE_LOG: log, PI_CODING_AGENT_DIR: agent, FAKE_PLAN: JSON.stringify({ gatherers: [{ name: "conversations", look_for: "x", reason: "r" }] }) };
+  const userFile = path.join(first.state, "user-settings.json");
+  const env = { TRIAGE_STATE: first.state, FAKE_LOG: log, PI_CODING_AGENT_DIR: agent, HERDR_ISSUES_CONFIG: userFile, TRIAGE_CONVERSATIONS: "", FAKE_PLAN: JSON.stringify({ gatherers: [{ name: "conversations", look_for: "x", reason: "r" }] }) };
+  // With no setting at all: offered to the planner, started, read.
   const g = cli(["gather", "card:closed-home", "--root", root], env);
   assert.equal(g.code, 0, g.raw);
-  assert.deepEqual(g.out.states.map((s) => s.name), ["code"], "with no setting, past conversations do not start");
-  assert.match(g.out.plan.not_started.find((n) => n.name === "conversations").why, /^off/);
-  assert.deepEqual(g.out.conversations, { mode: "off", read: null });
-  assert.doesNotMatch(fs.readFileSync(log, "utf8") + JSON.stringify(g.out), /DEFAULT-OFF-SENTINEL/);
-  assert.doesNotMatch(fs.readFileSync(log, "utf8").split("\n")[0], /conversations/, "the planner is not offered a gatherer that is off");
+  assert.deepEqual(g.out.states.map((s) => s.name), ["code", "conversations"], "with no setting, past conversations may start");
+  assert.equal(g.out.plan.not_started.find((n) => n.name === "conversations"), undefined);
+  assert.deepEqual(g.out.conversations, { mode: "on", read: { sessions: 1, entries: 1, found: true } });
+  assert.match(fs.readFileSync(log, "utf8").split("\n")[0], /conversations: this project's earlier Pi conversations/, "the planner is offered it like any other gatherer");
+  assert.match(fs.readFileSync(log, "utf8"), /DEFAULT-ON-SENTINEL/, "the matching text reached the gatherer's model call");
   const shown = cli(["show", "--root", root], env).out;
-  assert.equal(shown.conversations, "off");
-  assert.equal(S.settingsLine(shown), null, "nothing is said while it is off");
-  assert.equal(cli(["config", "--root", root, "--conversations", "on"], env).code, 0);
-  const on = cli(["show", "--root", root], env).out;
-  assert.equal(on.conversations, "on");
-  assert.equal(S.settingsLine(on), "Past conversations: on for this project (text only, redacted)");
-  const g2 = cli(["gather", "card:closed-home", "--root", root], env);
-  assert.deepEqual(g2.out.states.map((s) => s.name), ["code", "conversations"]);
-  assert.deepEqual(g2.out.conversations.read, { sessions: 1, entries: 1, found: true });
+  assert.deepEqual([shown.conversations, shown.conversations_from], ["on", "default"]);
+  assert.equal(S.settingsLine(shown), "Past conversations: on (text only, redacted)");
+  assert.match(S.settingsTip(shown), /Turn off: .*--conversations off/);
+  assert.match(S.briefViewLines(g.out, 400).map((l) => l.text).join("\n"), /Read 1 past conversation in this project \(1 messages; text only, redacted, nothing written\)\./);
+
+  // Off, said in each place on its own: not offered to the planner, not started, nothing read, and the widget says so.
+  const projectFile = path.join(root, ".herdr/issues.json");
+  const writeJson = (f, o) => (fs.mkdirSync(path.dirname(f), { recursive: true }), fs.writeFileSync(f, JSON.stringify(o)));
+  /** @type {[string, () => void, () => void, Record<string, string>, string[]][]} */
+  const places = [
+    ["saved", () => assert.equal(cli(["config", "--root", root, "--conversations", "off"], env).code, 0), () => assert.equal(cli(["config", "--root", root, "--conversations", "on"], env).code, 0), {}, []],
+    ["environment", () => {}, () => {}, { TRIAGE_CONVERSATIONS: "off" }, []],
+    ["user file", () => writeJson(userFile, { conversations: "off" }), () => fs.rmSync(userFile), {}, []],
+    ["project file", () => writeJson(projectFile, { conversations: false }), () => fs.rmSync(projectFile), {}, []],
+    ["flag", () => {}, () => {}, {}, ["--conversations", "off"]],
+  ];
+  for (const [where, before, after, extra, flags] of places) {
+    before();
+    const offLog = path.join(first.state, `off-${where.replace(" ", "-")}.log`);
+    const e = { ...env, ...extra, FAKE_LOG: offLog };
+    const off = cli(["gather", "card:closed-home", "--root", root, "--force", ...flags], e);
+    assert.equal(off.code, 0, `${where}: ${off.raw}`);
+    assert.deepEqual(off.out.states.map((s) => s.name), ["code"], `${where}: the gatherer does not start even when the planner names it`);
+    assert.equal(off.out.plan.not_started.find((n) => n.name === "conversations").why, G.CONVERSATIONS_OFF, where);
+    assert.deepEqual(off.out.conversations, { mode: "off", read: null }, where);
+    const said = fs.readFileSync(offLog, "utf8");
+    assert.doesNotMatch(said.split("\n")[0], /conversations/, `${where}: the planner is not offered a gatherer that is off`);
+    assert.doesNotMatch(said + JSON.stringify(off.out), /DEFAULT-ON-SENTINEL/, `${where}: nothing was read`);
+    const doc = cli(["show", "--root", root, ...flags], e).out;
+    assert.deepEqual([doc.conversations, doc.conversations_from], ["off", where]);
+    assert.equal(S.settingsLine(doc), "Past conversations: off for this project");
+    assert.match(S.settingsTip(doc), new RegExp(`off for this project \\(${where}\\)`));
+    assert.match(S.briefViewLines(off.out, 400).map((l) => l.text).join("\n"), /Past conversations were not read \(off for this project\)\./);
+    after();
+  }
+  // Off wins: a weaker layer's off is not undone by a stronger layer's on.
+  writeJson(userFile, { conversations: "off" });
+  const both = cli(["gather", "card:closed-home", "--root", root, "--force", "--conversations", "on"], { ...env, TRIAGE_CONVERSATIONS: "on" });
+  assert.deepEqual(both.out.states.map((s) => s.name), ["code"], "on in the environment and on the command line does not undo off in the user file");
+  fs.rmSync(userFile);
+  // A value that is neither on nor off fails closed.
+  const odd = cli(["gather", "card:closed-home", "--root", root, "--force"], { ...env, TRIAGE_CONVERSATIONS: "nope" });
+  assert.deepEqual([odd.out.states.map((s) => s.name), odd.out.conversations.mode], [["code"], "off"]);
+  // And back on once nothing says off.
+  const back = cli(["gather", "card:closed-home", "--root", root, "--force"], env);
+  assert.deepEqual(back.out.states.map((s) => s.name), ["code", "conversations"]);
   assert.match(fs.readFileSync(path.join(repo, "main.js"), "utf8"), /settingsLine\(/, "main.js draws that line");
+  assert.match(fs.readFileSync(path.join(repo, "main.js"), "utf8"), /settingsTip\(/, "main.js draws that tooltip");
 });

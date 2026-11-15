@@ -59,7 +59,14 @@ test("an unknown key and a bad value are reported and skipped; the rest of the f
   assert.equal(r.problems.length, 4);
   assert.match(r.problems[0], /file\.json: unknown setting "modle"/);
   assert.match(r.problems.join("\n"), /maxPressing must be a whole number from 1 to 10 \(got 99\)/);
-  assert.match(checkValue("conversations", "on").error, /unknown setting/, "past conversations are never switched on from a file");
+  // Past conversations: a key like the others, on by default, and off wins whatever a stronger layer says.
+  assert.deepEqual([checkValue("conversations", "on"), checkValue("conversations", false), checkValue("conversations", "OFF")], [{ value: "on" }, { value: "off" }, { value: "off" }]);
+  assert.match(checkValue("conversations", "sometimes").error, /must be on or off/);
+  assert.deepEqual([resolve({}).values.conversations, resolve({}).from.conversations], ["on", "default"]);
+  const offWins = resolve({ user: { conversations: "off" }, project: { conversations: "on" }, saved: { conversations: "on" }, env: { TRIAGE_CONVERSATIONS: "on" }, flags: { conversations: "on" } });
+  assert.deepEqual([offWins.values.conversations, offWins.from.conversations], ["off", "user file"], "a shared project file cannot switch back on what the person switched off");
+  assert.deepEqual(resolve({ project: { conversations: "off" }, env: { TRIAGE_CONVERSATIONS: "off" } }).from.conversations, "environment", "the strongest layer that says off is named");
+  assert.equal(resolve({ env: { TRIAGE_CONVERSATIONS: "nope" } }).values.conversations, "off", "a value that is neither fails closed");
   assert.deepEqual(checkValue("gatherers", ["code", "history"]), { value: "code,history" });
   assert.deepEqual(checkValue("refreshSeconds", "300"), { value: 300 });
   // A bad value in the environment is a problem, not a crash, and the weaker layer stays.

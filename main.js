@@ -18,7 +18,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
 import { createFrame, frameParts } from "./frame.js";
-import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, settingsTip, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -563,7 +563,7 @@ export default class Issues extends View {
             .truncate()
             .text_size(10.5)
             .text_color(rules.error ? t.blocked : t.dim)
-            .tooltip(`${rules.error ? `${rules.error}. Hand-offs need a rules file.` : `Rules sent with every hand-off: ${rules.path}`}${settingsLine(this.docs[this.root]) ? `\n${settingsLine(this.docs[this.root])}` : ""}`)
+            .tooltip(`${rules.error ? `${rules.error}. Hand-offs need a rules file.` : `Rules sent with every hand-off: ${rules.path}`}${settingsTip(this.docs[this.root]) ? `\n${settingsTip(this.docs[this.root])}` : ""}`)
             .child(`${rules.error ? `Rules: missing (${rules.error})` : `Rules: ${rules.path.split("/").slice(-2).join("/")} (${rules.source})`}${settingsLine(this.docs[this.root]) ? ` · ${settingsLine(this.docs[this.root])}` : ""}`),
         ),
       );

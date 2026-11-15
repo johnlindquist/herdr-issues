@@ -91,9 +91,17 @@ export function actionItem({ view, items, selected }) {
   return selected ?? null;
 }
 
-/** Said in the widget only while past conversations are on for the shown project. */
+/** Said beside the rules line: whether past conversations may be read for the shown project. On is the default. */
 export function settingsLine(doc) {
-  return doc?.conversations === "on" ? "Past conversations: on for this project (text only, redacted)" : null;
+  if (!doc?.conversations) return null;
+  return doc.conversations === "off" ? "Past conversations: off for this project" : "Past conversations: on (text only, redacted)";
+}
+
+/** The longer form, for the tooltip: what on means and how to turn it off, or where off was set. */
+export function settingsTip(doc) {
+  if (!doc?.conversations) return null;
+  if (doc.conversations === "off") return `Past conversations: off for this project${doc.conversations_from && doc.conversations_from !== "default" ? ` (${doc.conversations_from})` : ""}. Nothing is read from them.`;
+  return "Past conversations: on. A gather may read this project's earlier Pi conversations: only what you and the assistant wrote, with secrets removed first. Turn off: triage.mjs config --root <project> --conversations off";
 }
 
 /** The footer's model, short: "haiku-4-5", with the thinking level when it is on. */
@@ -175,9 +183,10 @@ export function briefViewLines(doc, width = 44) {
     for (const d of doc.plan.dropped ?? []) add(`- "${d.name}" dropped from the plan: ${d.reason}`, "warn", "  ");
     if (doc.plan.note) add(doc.plan.note, "warn");
     const r = doc.conversations?.read;
-    if (doc.conversations?.mode !== "on") add("Past conversations were not read (off for this project).", "dim");
+    if (doc.conversations?.mode === "off") add("Past conversations were not read (off for this project).", "dim");
     else if (r?.found) add(`Read ${r.sessions} past conversation${r.sessions === 1 ? "" : "s"} in this project (${r.entries} messages; text only, redacted, nothing written).`, "dim");
     else if (r) add("No past conversations found for this project.", "dim");
+    else if (doc.conversations) add("Past conversations were not read for this issue (the planner did not start them).", "dim");
     out.push({ text: "", tone: "body" });
   }
   for (const line of String(doc.text ?? "").split("\n")) add(line, line.startsWith("- ") ? "body" : "head", line.startsWith("- ") ? "  " : "");

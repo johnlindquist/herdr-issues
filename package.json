@@ -14,7 +14,7 @@
   },
   "scripts": {
     "check": "sh fence.sh",
-    "test": "HERDR_ISSUES_CONFIG=/nonexistent/herdr-issues.json node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
+    "test": "HERDR_ISSUES_CONFIG=/nonexistent/herdr-issues.json PI_CODING_AGENT_DIR=/nonexistent/pi-agent node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

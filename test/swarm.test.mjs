@@ -76,8 +76,8 @@ test("the plan is checked by code: an unknown name is dropped, a repeat is merge
   assert.match(validatePlan("not json", GATHERERS).note, /only Code ran/);
   // A gatherer a setting turned off cannot be planned.
   const { on, off } = availableGatherers({ conversations: "off" });
-  assert.deepEqual(off.map((g) => [g.label, g.why]), [["Past conversations", "off (the default; a project setting turns it on)"]]);
-  assert.deepEqual(availableGatherers().off.map((g) => g.name), ["conversations"], "off unless turned on");
+  assert.deepEqual(off.map((g) => [g.label, g.why]), [["Past conversations", "off (turned off in settings; `config` says where)"]]);
+  assert.deepEqual(availableGatherers().off, [], "on unless turned off");
   assert.deepEqual(availableGatherers({ conversations: "on" }).off, []);
   assert.deepEqual(validatePlan('{"gatherers": [{"name": "conversations", "reason": "r"}]}', on).gatherers.map((g) => g.name), ["code"]);
   assert.deepEqual(availableGatherers({ only: "history" }).on.map((g) => g.name), ["code", "history"]);
@@ -204,11 +204,11 @@ test("CLI: the planner's plan runs as a swarm; a failed gatherer is shown and do
   assert.ok(at.every((n, i) => n >= 0 && (i === 0 || n > at[i - 1])), JSON.stringify(at));
   assert.match(p, /Start from this brief; open files only for what is missing/);
   assert.doesNotMatch(p + t + view, /fixer/i);
-  // Off switch: saved for the project; the gatherer cannot start even when the planner names it, and nothing is read.
+  // Off switch: saved for the project (and it wins over TRIAGE_CONVERSATIONS=on in the environment); the gatherer cannot start even when the planner names it, and nothing is read.
   assert.equal(cli(["config", "--root", root, "--conversations", "off"], env).code, 0);
   const off = cli(["gather", "card:closed-home", "--root", root], env);
   assert.deepEqual(off.out.plan.gatherers.map((x) => x.name), ["code", "history"]);
-  assert.deepEqual(off.out.plan.not_started.find((n) => n.name === "conversations").why, "off (the default; a project setting turns it on)");
+  assert.deepEqual(off.out.plan.not_started.find((n) => n.name === "conversations").why, "off (turned off in settings; `config` says where)");
   assert.deepEqual(off.out.conversations, { mode: "off", read: null });
   assert.match(briefViewLines(off.out, 400).map((l) => l.text).join("\n"), /Past conversations were not read \(off for this project\)\./);
 });

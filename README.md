@@ -108,6 +108,8 @@ Without `npm run seed` only the board is read. Open the `rentaplace` folder in a
    | **Tab** / **Shift+Tab** | The widget below or above |
    | **−** | Collapse to one line: "Issues · 5 pressing" |
 
+   Handing an issue to an agent other than Main is not one of the keys; [Handing an issue to another agent](#handing-an-issue-to-another-agent) has a ready prompt for adding it.
+
 8. **The right-click menu.** Right-click an issue (or press **Shift+F10**) for the same actions with their keys. **↑/↓** move, **Enter** chooses, **Esc** closes.
 
 9. **Gather before the hand-off.** Select an issue and press **M**. The row shows the work as it happens:
@@ -128,7 +130,7 @@ Without `npm run seed` only the board is read. Open the `rentaplace` folder in a
    | History | commits that touched those files or mention the issue's words |
    | GitHub | related issues and pull requests, read-only through `gh` |
    | Packages | newer versions of the libraries involved, from the npm registry |
-   | Past conversations | decisions in this project's earlier Pi conversations. Off until you turn it on (below) |
+   | Past conversations | decisions in this project's earlier Pi conversations. On unless you turn it off ([below](#past-conversations-on-and-how-to-turn-it-off)) |
 
 10. **Every line names its source.** Each line of the brief ends with what it cites: a ticket id, a `file:line`, `commit:<sha>` or a URL. Code checks each citation against what the model was actually sent and drops a line that cites nothing real; **B** shows the brief, the dropped lines and why. A gatherer that finds nothing says "nothing relevant".
 
@@ -170,27 +172,53 @@ No separate agent tries to solve the issue. Issues prepares the ground with smal
 - **Receipts.** Every hand-off is recorded with the message that was sent, the time and the cost, under `~/.cache/herdr-triage`. Issues never writes into your project except `rules --init`, and never creates, edits, closes or comments on an issue.
 - **Which gatherers may start.** `config set gatherers code,history`.
 
-### Past conversations: off unless you turn it on
+### Past conversations: on, and how to turn it off
 
-This gatherer reads this project's earlier Pi conversations to find decisions you already made. It is **off by default** and stays off until you turn it on for one project:
+This gatherer reads this project's earlier Pi conversations to find decisions you already made, things you already tried and preferences you stated. It is **on**: the planner may start it like any other gatherer. The reasoning is simple: what is in your conversations has already been sent to a model provider once, when you had them.
+
+What it reads, and what is removed:
+
+- Only sessions whose own header says they were started in this project. Never another project's.
+- Only what you and the assistant wrote. Never tool output, never thinking, never system messages.
+- Secrets, tokens, keys, e-mail addresses and home paths are removed before any model, cache file, receipt or prompt sees the text. Short excerpts that match the issue's words are then sent to the small model.
+- Nothing is written in the sessions folder, and none of what was read is stored: only findings the model kept, each citing a session and entry.
+
+The widget says when it happened: the issue's row reads "Past conversations: 1 finding · read 3 conversations", and the brief (**B**) says how many conversations and messages were read. The line under the legend ends with "Past conversations: on (text only, redacted)" or "Past conversations: off for this project"; hover it for more.
+
+**The one limit left.** The excerpts go to the small model you chose in `model`. That may be a different provider than the one you had the conversation with. Redaction recognises a credential by its name (password, token, api key, secret, a cookie or authorization header) or by its shape (a long random-looking string, a private-key block, a URL with a password); a secret with neither, such as a short plain word pasted on its own, is not recognised and goes along with the excerpt. If it matters to you that a second provider sees parts of these conversations, turn it off.
+
+Turn it off:
 
 ```sh
-node ~/.config/herdr-app/mods/triage/triage.mjs config --root <project> --conversations on     # on, this project only
-node ~/.config/herdr-app/mods/triage/triage.mjs config --root <project> --conversations off    # off again
+node ~/.config/herdr-app/mods/triage/triage.mjs config --root <project> --conversations off    # this project, on this machine
+node ~/.config/herdr-app/mods/triage/triage.mjs config --root <project> --conversations on     # back on for this project
+node ~/.config/herdr-app/mods/triage/triage.mjs config set conversations off                   # every project (your settings file)
+TRIAGE_CONVERSATIONS=off                                                                       # wherever this variable is set
 ```
 
-While it is on, the tooltip of the widget's rules line ends with "Past conversations: on for this project (text only, redacted)", and the issue's row says how many conversations were read.
+**Off wins.** Unlike the other settings, `conversations` does not follow the usual order: if any place says off (your settings file, the project's file, the saved choice for the project, the environment or a flag), it is off, and a stronger place saying on does not undo it. So a project file someone else wrote can turn reading off for that project, but can never turn back on what you turned off. A value that is neither on nor off counts as off. `config` shows the value and which place set it. While it is off the planner is not offered the gatherer, nothing in the sessions folder is opened, and the brief says "Past conversations were not read (off for this project)."
 
-What it does when on:
+A clone of a project has no conversations of its own. `config --root <clone> --conversations-of <the original project folder>` counts the original's conversations as this project's; the same rules apply.
 
-- Reads only sessions whose own header says they were started in this project.
-- Takes only what you and the assistant wrote. Never tool output, never thinking, never system messages.
-- Removes secrets, tokens, keys, e-mail addresses and home paths before any model, cache file, receipt or prompt sees the text. Short excerpts that match the issue's words are then sent to the small model, so your model provider sees them.
-- Writes nothing in the sessions folder, and stores none of what it read: only findings the model kept, each citing a session and entry.
+### Handing an issue to another agent
 
-Before you turn it on, know its limits. Redaction recognises a credential by its name (password, token, api key, secret, a cookie or authorization header) or by its shape (a long random-looking string, a private-key block, a URL with a password). A secret with neither, such as a short plain word pasted on its own, is not recognised and can be sent. Three reviews of the redaction each found a credential that slipped past; each was fixed and is now a test, but treat a leak as possible. Leave it off if the conversations hold other people's private details or anything you may not share with your model provider. After the first press, open the brief (**B**) and read the Past conversations section before relying on it.
+Sending to Main always works when the space has a Pi in it, because the widget finds Main itself: the Pi named Main, else the first Pi in the space (`targetsIn` in `main.js`). **N** starts a new Main when you want a fresh one.
 
-A clone of a project has no conversations of its own. `--conversations-of <the original project folder>` counts the original's conversations as this project's; the same rules apply.
+Handing an issue to some other agent in the space is not built in. It is a small thing to add for yourself, and a good first change to make to this widget. Give your agent this:
+
+```
+In the Issues widget (the Herdr mod in this folder), add a key, H, "Hand to another agent".
+When I press it on the selected issue, show a short list of the other agents in this space
+(every agent in the space except Main: see how targetsIn in main.js finds Main from agents()),
+with arrow keys and Enter to pick one and Esc to cancel. Then send the picked agent exactly
+the hand-off message Main would get: gather the context first as a visible step, the same way
+M does, then run the existing act <id> send-main with --terminal set to the picked agent's
+address instead of Main's. Reuse the send-main path; do not write a second message format.
+Add the action to ACTIONS in src/actions.mjs so the legend, the right-click menu and describe
+list it, dim it with a reason when the space has no other agent, and make the footer and the
+receipt name the agent it went to instead of saying Main. Add tests beside the ones for
+send-main, run npm test and sh fence.sh, and try it in a lab window before you install it.
+```
 
 ## Settings
 
@@ -232,7 +260,8 @@ node ~/.config/herdr-app/mods/triage/triage.mjs config path                  # t
 | `sources` | `local`, `github`, `local,github` | the project's inbox and board when it has them, else GitHub | Where issues come from | `TRIAGE_SOURCE` |
 | `repo` | owner/name | the project's origin | The GitHub repository to read and search | `TRIAGE_REPO` |
 | `maxPressing` | 1 to 10 | `5` | The most issues listed under Most pressing | `TRIAGE_MAX_PRESSING` |
-| `gatherers` | names from `code`, `history`, `github`, `packages`, `conversations` | all that are on | Which gatherers the planner may start | `TRIAGE_GATHERERS` |
+| `gatherers` | names from `code`, `history`, `github`, `packages`, `conversations` | all of them | Which gatherers the planner may start | `TRIAGE_GATHERERS` |
+| `conversations` | `on`, `off` | `on` | Whether Past conversations may be read. Off in any place wins ([above](#past-conversations-on-and-how-to-turn-it-off)) | `TRIAGE_CONVERSATIONS` |
 | `gatherSeconds` | 5 to 120 | `20` | How long one gatherer may take | `TRIAGE_GATHER_SECONDS` |
 | `rulesFile` | path | `issues-rules.md` in the project, else the widget's `rules.md` | The rules sent with every hand-off | `TRIAGE_RULES` |
 | `instruction` | `never-overstate`, `baseline` | `never-overstate` | The instructions for judging | `TRIAGE_INSTRUCTION` |
@@ -250,8 +279,6 @@ node ~/.config/herdr-app/mods/triage/triage.mjs config set model anthropic/claud
 ```
 
 Press **R** in the widget to read again, run your lab on each, and keep the one that passes. `config unset model` goes back.
-
-Past conversations are not a key in these files on purpose: a shared project file must not be able to switch on reading your conversations. They are turned on per project, on your machine only (below).
 
 ## Move it, pop it out, close it
 

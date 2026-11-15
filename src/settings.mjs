@@ -6,6 +6,9 @@
 //   user file     ~/.config/herdr-issues/config.json (or the path in HERDR_ISSUES_CONFIG)
 //   project file  <project>/.herdr/issues.json
 //   saved         what `config --model …` (the older form) stored for one project in the state folder
+// One key does not follow that order: `conversations` (reading this project's past Pi conversations)
+// is on by default and OFF WINS: "off" in any layer turns it off, whatever a stronger layer says, so
+// a shared project file can never switch back on what a person switched off.
 // An unknown key or a bad value is reported as a problem and skipped; a file that is not JSON is a
 // problem too, and the weaker layers (in the end the defaults) are used.
 
@@ -31,6 +34,13 @@ const whole = (min, max) => (v) => {
   const n = typeof v === "number" ? v : /^\d+$/.test(String(v).trim()) ? Number(v) : NaN;
   return Number.isInteger(n) && n >= min && n <= max ? { value: n } : { error: `must be a whole number from ${min} to ${max}` };
 };
+/** on or off, as people write it (on/off, true/false, yes/no, 1/0). */
+const ON_WORDS = ["on", "true", "yes", "1"];
+const OFF_WORDS = ["off", "false", "no", "0"];
+const onOff = (v) => {
+  const s = String(v).trim().toLowerCase();
+  return ON_WORDS.includes(s) ? { value: "on" } : OFF_WORDS.includes(s) ? { value: "off" } : { error: "must be on or off" };
+};
 const text = (pattern, hint) => (v) => (typeof v === "string" && pattern.test(v.trim()) ? { value: v.trim() } : { error: hint });
 
 /**
@@ -45,7 +55,8 @@ export const KEYS = {
   sources: { type: "local | github | local,github", default: null, env: "TRIAGE_SOURCE", flag: "source", about: "Where issues come from. Default: the project's own inbox and board when it has them, else GitHub issues", check: names(SOURCE_NAMES) },
   repo: { type: "owner/name", default: null, env: "TRIAGE_REPO", flag: "repo", about: "The GitHub repository to read and search. Default: the project's origin remote", check: text(/^[\w.-]+\/[\w.-]+$/, "must look like owner/name") },
   maxPressing: { type: "whole number, 1 to 10", default: 5, env: "TRIAGE_MAX_PRESSING", flag: "max-pressing", about: "The most issues listed under Most pressing", check: whole(1, 10) },
-  gatherers: { type: `comma list of ${GATHERER_NAMES.join(", ")}`, default: null, env: "TRIAGE_GATHERERS", flag: "gatherers", about: "Which gatherers the planner may start. Default: all that are on (past conversations stay off until `config --conversations on`)", check: names(GATHERER_NAMES) },
+  gatherers: { type: `comma list of ${GATHERER_NAMES.join(", ")}`, default: null, env: "TRIAGE_GATHERERS", flag: "gatherers", about: "Which gatherers the planner may start. Default: all of them (past conversations too, unless `conversations` is off)", check: names(GATHERER_NAMES) },
+  conversations: { type: "on | off", default: "on", env: "TRIAGE_CONVERSATIONS", flag: "conversations", about: "Whether the Past conversations gatherer may read this project's earlier Pi conversations (only sessions started in this project; only what the person and the assistant wrote; redacted before any model, cache, receipt or prompt). Off wins: off in any file, saved for the project, in the environment or on the command line turns it off", check: onOff },
   gatherSeconds: { type: "whole number, 5 to 120", default: 20, env: "TRIAGE_GATHER_SECONDS", flag: "gather-seconds", about: "How long one gatherer may take before it is shown as timed out", check: whole(5, 120) },
   rulesFile: { type: "path", default: null, env: "TRIAGE_RULES", flag: "rules", about: "The rules file sent with every hand-off; a relative path starts at the project. Default: <project>/issues-rules.md, else the widget's rules.md", check: text(/\S/, "must be a path") },
   instruction: { type: INSTRUCTION_NAMES.join(" | "), default: "never-overstate", env: "TRIAGE_INSTRUCTION", flag: "instruction", about: "The instructions the judging model gets. baseline is the original, kept to show the difference", check: oneOf(INSTRUCTION_NAMES) },
@@ -128,6 +139,12 @@ export function resolve({ user = {}, project = {}, saved = {}, env = {}, flags =
     take(env[k.env], "environment", `environment ${k.env}`);
     take(flags[k.flag], "flag", `--${k.flag}`, flagErrors);
   }
+  // Past conversations: off wins. Any layer that says off (or says something that is not on or off:
+  // it fails closed) turns reading off; `from` names the strongest layer that did.
+  const isOff = (raw) => raw !== undefined && raw !== null && raw !== true && raw !== "" && checkValue("conversations", raw).value !== "on";
+  const k = KEYS.conversations;
+  const off = [["user file", user.conversations], ["project file", project.conversations], ["saved", saved[k.flag]], ["environment", env[k.env]], ["flag", flags[k.flag]]].filter(([, raw]) => isOff(raw));
+  if (off.length) ((values.conversations = "off"), (from.conversations = /** @type {string} */ (off[off.length - 1][0])));
   return { values, from, problems: all, flagErrors };
 }
 

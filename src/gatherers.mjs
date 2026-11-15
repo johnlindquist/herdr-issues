@@ -285,7 +285,7 @@ export async function fetchPackages(ctx) {
 }
 
 // ---------- PAST CONVERSATIONS: this project's Pi sessions, text only, redacted, read-only ----------
-// Off unless the project's setting turns it on. Text read here is Raw (src/redact.mjs) until the one
+// On unless a setting turns it off (`conversations: off`, off wins). Text read here is Raw (src/redact.mjs) until the one
 // line below that redacts it; nothing fetched is stored, only the findings a model kept.
 
 /** Where Pi keeps a project's sessions: <agent dir>/sessions/--<project path with / as ->--. Two projects can share a folder (a-b and a/b), so the folder alone proves nothing. */
@@ -641,13 +641,16 @@ function pastCount(dir) {
   }
 }
 
+/** Why Past conversations did not start when a setting turned it off. */
+export const CONVERSATIONS_OFF = "off (turned off in settings; `config` says where)";
+
 /** Which gatherers may start for this project: the registry, minus what a setting turned off. */
-export function availableGatherers({ only = null, conversations = "off" } = {}) {
+export function availableGatherers({ only = null, conversations = "on" } = {}) {
   const names = only ? String(only).split(",").map((n) => n.trim()).filter(Boolean) : null;
   const off = [];
   const on = [];
   for (const g of GATHERERS) {
-    if (g.name === "conversations" && conversations !== "on") off.push({ name: g.name, label: g.label, why: "off (the default; a project setting turns it on)" });
+    if (g.name === "conversations" && conversations === "off") off.push({ name: g.name, label: g.label, why: CONVERSATIONS_OFF });
     else if (names && g.name !== "code" && !names.includes(g.name)) off.push({ name: g.name, label: g.label, why: "off (project setting)" });
     else on.push(g);
   }
@@ -661,7 +664,7 @@ export function availableGatherers({ only = null, conversations = "off" } = {}) 
  * `progress(p)` is called as the plan and each gatherer's state change (the sidebar shows them).
  * @param {{ root: string, store: any, model: string, instruction?: string, issue: any, force?: boolean, repo?: string|null, only?: string|null, conversations?: { mode: string, of: string|null }, agentDir?: string, exec?: typeof execP, fetchJson?: typeof fetchJson, timeoutMs?: number, thinking?: string, progress?: (p: any) => void }} o
  */
-export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "off", of: null }, agentDir = undefined, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, thinking = "off", progress = () => {} }) {
+export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "on", of: null }, agentDir = undefined, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, thinking = "off", progress = () => {} }) {
   const t0 = Date.now();
   const candidates = collect({ root, title: issue.title, reports: issue.reports });
   const { ms: collectMs, ...stable } = candidates;

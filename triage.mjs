@@ -49,8 +49,8 @@ function parseArgs(argv) {
 const expandHome = (p) => (p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p);
 
 // ---------- settings: default < user file < project file < saved on this machine < environment < flag ----------
-// What is valid and where a value comes from: src/settings.mjs. Past conversations are not a
-// settings-file key on purpose: they are switched on per project, on this machine only (`config --conversations on`).
+// What is valid and where a value comes from: src/settings.mjs. Past conversations (`conversations`)
+// are on by default and off wins: off in any layer turns them off (`config --conversations off` for one project).
 
 async function configFor(args) {
   const root = path.resolve(expandHome(typeof args.root === "string" ? args.root : process.cwd()));
@@ -79,7 +79,7 @@ async function configFor(args) {
     rules: v.rulesFile ? expandHome(v.rulesFile) : null,
     gatherInstruction: v.gatherInstruction,
     gatherers: v.gatherers,
-    conversations: { mode: local("conversations", "TRIAGE_CONVERSATIONS") === "on" ? "on" : "off", of: local("conversations-of", "TRIAGE_CONVERSATIONS_OF") ? path.resolve(expandHome(local("conversations-of", "TRIAGE_CONVERSATIONS_OF"))) : null },
+    conversations: { mode: v.conversations === "off" ? "off" : "on", of: local("conversations-of", "TRIAGE_CONVERSATIONS_OF") ? path.resolve(expandHome(local("conversations-of", "TRIAGE_CONVERSATIONS_OF"))) : null },
   };
 }
 
@@ -236,7 +236,8 @@ async function view(cfg) {
     pressing: pressing.map((p) => withContext(p, [p.id, ...p.merged.map((m) => m.id)])),
     others: others(groups, taken).filter((g) => !dismissed.has(g.id)).map((g) => withContext(card(g), [g.id])),
     rules,
-    conversations: cfg.conversations.mode, // "on" only when this project's setting says so
+    conversations: cfg.conversations.mode, // "on" unless a setting turned it off
+    conversations_from: cfg.settings.from.conversations,
     settings: { model: cfg.model, model_from: cfg.settings.from.model, thinking: cfg.thinking, refreshSeconds: cfg.settings.values.refreshSeconds, problems: cfg.settings.problems, files: cfg.settings.files },
     dismissed: [...dismissed].sort(compareIds),
     counts: { issues: groups.reduce((n, g) => n + g.members.length, 0), distinct: groups.length },
@@ -375,7 +376,7 @@ async function explain(cfg, id) {
   return { id: g.id, ids: g.members.map((m) => m.id), pressing_rank: rank >= 0 ? rank + 1 : null, why, text: issueText(g, why), hash: g.hash, prompt, argv: ["pi", "--name", `Explain ${g.id}`, prompt] };
 }
 
-/** Past-conversation and other machine-local choices, stored for one project in the state folder (the older `config --flag value` form). */
+/** Choices for one project on this machine, stored for one project in the state folder (the older `config --flag value` form). */
 const SAVED_FLAGS = ["source", "repo", "model", "instruction", "rules", "gather-instruction", "gatherers", "conversations", "conversations-of"];
 
 /**
@@ -423,9 +424,9 @@ const DESCRIBE = {
     act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (gathers, then hc send) | new-main [--apply] (gathers, then prints the herdr space.new command whose task is the prompt; --apply runs it) | brief (same as gather) | open | dismiss | restore. --gathered <key>: the brief with this key was gathered for this hand-off just now (the sidebar gathers as a visible step first), so the receipt says gathered, not reused. --no-context: hand over the issue and the rules without a brief (an explicit choice; a failed gather never sends on its own). --dry-run records the receipt without doing it. Every hand-off's receipt keeps the prompt, the context state, time, cost and the rules file",
     rules: `rules --root <project> [--init]: the one rules file a hand-off uses and its text: --rules <path> or config, else <project>/${PROJECT_RULES}, else the widget's own rules.md. --init copies the default to <project>/${PROJECT_RULES} so it can be edited there`,
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
-    config: "config --root <project>: the effective settings, each with where it came from (default | user file | project file | saved | environment | flag), any problems found in the files, and both file paths. config set <key> <value> [--project]: check the value, then write it to the user file, or with --project (last on the line) to <project>/.herdr/issues.json. config unset <key> [--project]: remove it. config path: the two files. A problem (an unknown key, a bad value, a file that is not JSON) is reported and that entry is skipped; the weaker layers still apply. Machine-local, per project, never in a file: config --conversations on|off and --conversations-of <folder>. The older form config --model <id> (also --source, --repo, --instruction, --rules, --gather-instruction, --gatherers) still saves a value for one project on this machine (the 'saved' layer)",
+    config: "config --root <project>: the effective settings, each with where it came from (default | user file | project file | saved | environment | flag), any problems found in the files, and both file paths. config set <key> <value> [--project]: check the value, then write it to the user file, or with --project (last on the line) to <project>/.herdr/issues.json. config unset <key> [--project]: remove it. config path: the two files. A problem (an unknown key, a bad value, a file that is not JSON) is reported and that entry is skipped; the weaker layers still apply. Past conversations are on by default: config --root <project> --conversations off turns them off for one project on this machine (on turns them back on), config set conversations off for every project, and off in any layer wins. Machine-local, per project, never in a file: --conversations-of <folder>. The older form config --model <id> (also --source, --repo, --instruction, --rules, --gather-instruction, --gatherers) still saves a value for one project on this machine (the 'saved' layer)",
     progress: "progress <id> --root <project>: the plan and each gatherer's state for the gather that is running or last ran: {phase: planning | gathering | none, plan [{name, label, look_for, reason}], not_started [{label, why}], states [{label, state: searching | findings | nothing | timeout | error, findings, ms}]}",
-    swarm: `gathering is a planner plus a swarm. One small-model call reads the issue and picks which gatherers start and what each looks for (${GATHERERS.map((g) => g.name).join(", ")}); code checks the plan (an unknown name is dropped, an empty plan is code only, code always runs). The chosen gatherers run in parallel, each inside ${SWARM_LIMITS.timeoutMs / 1000} s; a slow or failed one is shown as such and never blocks the hand-off. Code fetches and bounds; the small model only judges relevance; a line is kept only when it cites something code fetched. Everything outside the project is read-only (git, gh search and GETs, the npm registry, Pi session files). Cap per press: at most 6 small-model calls, $${COST_CAP_USD}; a press that reports more is flagged. Past conversations are OFF unless the project turns them on. Settings (config): --gatherers code,history,... (which may start), --conversations on (read this project's past Pi conversations: only sessions whose own header says they were started in this project; user and assistant text only; redacted before any model, cache, receipt or prompt sees it; nothing is written there), --conversations-of <project folder> (count that folder's conversations as this project's, for a clone).`,
+    swarm: `gathering is a planner plus a swarm. One small-model call reads the issue and picks which gatherers start and what each looks for (${GATHERERS.map((g) => g.name).join(", ")}); code checks the plan (an unknown name is dropped, an empty plan is code only, code always runs). The chosen gatherers run in parallel, each inside ${SWARM_LIMITS.timeoutMs / 1000} s; a slow or failed one is shown as such and never blocks the hand-off. Code fetches and bounds; the small model only judges relevance; a line is kept only when it cites something code fetched. Everything outside the project is read-only (git, gh search and GETs, the npm registry, Pi session files). Cap per press: at most 6 small-model calls, $${COST_CAP_USD}; a press that reports more is flagged. Past conversations are ON unless a setting turns them off, and the planner may pick them like any other gatherer: only sessions whose own header says they were started in this project; user and assistant text only; redacted before any model, cache, receipt or prompt sees it; nothing is written there; the kept excerpts go to the small model set in model. Settings (config): --gatherers code,history,... (which may start), --conversations off (do not read this project's past Pi conversations; also TRIAGE_CONVERSATIONS=off, or conversations: off in a settings file; off anywhere wins), --conversations-of <project folder> (count that folder's conversations as this project's, for a clone).`,
     describe: "this description",
   },
   actions: ACTIONS,

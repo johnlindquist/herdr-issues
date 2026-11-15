@@ -60,7 +60,7 @@ test("a brief cached under the earlier cache version (4) is not reused: the issu
   const p = triage.summary.pressing.find((x) => x.ids.includes(group.id));
   const issue = issueFor(p.ids.map((x) => triage.groups.find((y) => y.id === x)), p.why, p.title);
   const { ms: _ms, ...stable } = collect({ root, title: issue.title, reports: issue.reports });
-  const keyAt = (v) => hashOf({ v, issue: issue.hash, candidates: stable, model: g.out.model, system: hashOf(gatherSystem(g.out.instruction)), gatherers: availableGatherers({ only: null, conversations: "off" }).on.map((x) => x.name), conversations: { mode: "off", of: null } });
+  const keyAt = (v) => hashOf({ v, issue: issue.hash, candidates: stable, model: g.out.model, system: hashOf(gatherSystem(g.out.instruction)), gatherers: availableGatherers({ only: null, conversations: "on" }).on.map((x) => x.name), conversations: { mode: "on", of: null } });
   assert.ok([4, 5, 6, 7, 8].some((v) => keyAt(v) === g.out.key), "this test builds the cache key the way the widget does");
   // Plant what a version-4 cache would hold: a brief whose excerpts were made before the excerpt fix.
   const old = { ...g.out, key: keyAt(4), excerpts: { text: "== ticket-private.json (4 lines)\nticket-private.json:1| PRE-FIX-EXCERPT-SENTINEL", files: [{ path: "ticket-private.json", ranges: [[1, 4]] }], lines: 1, cut: false } };

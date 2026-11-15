@@ -139,11 +139,14 @@ test("findings 2 to 4: Windows line endings, a quoted value that closes far away
   assert.deepEqual(sent, [], "these reach the model's input");
 });
 
-test("past conversations are still off by default, and the README says in plain words when they may be switched on", () => {
-  assert.deepEqual(G.availableGatherers().off.map((g) => g.name), ["conversations"]);
+test("past conversations are on by default, and the README says in plain words what is read, what is left, and how to turn them off", () => {
+  assert.deepEqual(G.availableGatherers().off, []);
+  assert.deepEqual(G.availableGatherers({ conversations: "off" }).off.map((g) => g.name), ["conversations"]);
   const readme = fs.existsSync(path.join(repo, "README.md")) ? fs.readFileSync(path.join(repo, "README.md"), "utf8") : "";
-  assert.match(readme, /Past conversations: off unless you turn it on/i, "README.md has the section");
-  assert.match(readme, /Before you turn it on/i);
-  assert.match(readme, /--conversations on/);
+  assert.match(readme, /### Past conversations: on, and how to turn it off/, "README.md has the section");
+  assert.match(readme, /--conversations off/);
+  assert.match(readme, /TRIAGE_CONVERSATIONS=off/);
+  assert.match(readme, /may be a different provider/i, "the one limit left is stated");
+  assert.doesNotMatch(readme, /off by default|off unless you turn it on|must not be able to switch on/i, "no sentence from the old default is left");
   assert.doesNotMatch(readme, /fixer/i);
 });
