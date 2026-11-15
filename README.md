@@ -62,7 +62,7 @@ Without `npm run seed` only the board is read. Open the `rentaplace` folder in a
 
 1. **Ask for the widget.** In the lesson you type `/widget issues` in Main and describe it: read RentAPlace's support inbox and board, pick the few most pressing with one line on why, keep the source ID for everything. `/widget` comes from [herdr-pi-widget](https://github.com/johnlindquist/herdr-pi-widget). This repository is what that request grew into, so installing it skips the building.
 
-2. **Plain code gathers.** With RentAPlace open, Issues reads the three places itself, with no model: 28 open tickets, 1 feedback and 9 cards. Tickets that say the same thing word for word are merged by code, which leaves 17 groups. See exactly what was read, with every id:
+2. **Plain code gathers.** With RentAPlace open, Issues reads the three places itself, with no model: 28 open tickets, 1 feedback and 8 cards. Tickets that say the same thing word for word are merged by code, which leaves 17 groups. See exactly what was read, with every id:
 
    ```sh
    node ~/.config/herdr-app/mods/triage/triage.mjs refresh --root . --pretty
@@ -254,7 +254,7 @@ What was checked for 0.1.0 on 2026-11-15, macOS, Herdr 0.1.14, Pi 1.5.0, Node 25
 
 - **Clean install.** A fresh clone of this repository, `./install.sh` into an empty Herdr home: both mods copied, `herdr-app check` passed for `triage` and `triage-menu`. With a `keys.json` present, Command I was added when free, reported as already set on a second run, and left alone when taken.
 - **Checks from the clean clone.** `npm install`, then `npm run check`: types, syntax and 62 tests passed.
-- **End to end from the command line**, with the installed helper, real `claude-haiku-4-5` calls and a fresh clone of RentAPlace after `npm run seed`: `refresh` read 28 tickets, 1 feedback and 9 cards and returned five pressing issues with real ids in 4 s; `gather ticket-0001` planned Code, History and GitHub, kept 13 cited lines and dropped 1, in 11 s for $0.017; `prompt` printed the message with the issue, the brief, the cited code and the rules; `act … send-main --dry-run` and `act … new-main` produced the `hc send` and `space.new` commands. `config --model anthropic/claude-sonnet-4-6` switched the model and read the inbox for $0.013.
+- **End to end from the command line**, with the installed helper, real `claude-haiku-4-5` calls and a fresh clone of RentAPlace after `npm run seed`: `refresh` read 28 tickets, 1 feedback and 8 cards and returned five pressing issues with real ids in 4 s; `gather ticket-0001` planned Code, History and GitHub, kept 13 cited lines and dropped 1, in 11 s for $0.017; `prompt` printed the message with the issue, the brief, the cited code and the rules; `act … send-main --dry-run` and `act … new-main` produced the `hc send` and `space.new` commands. `config --model anthropic/claude-sonnet-4-6` switched the model and read the inbox for $0.013.
 - **Not checked for 0.1.0:** the panel in a Herdr window after a clean install (docking on first sight, Command I, the legend, the right-click menu, the message arriving in a live Main).
 
 ```sh
