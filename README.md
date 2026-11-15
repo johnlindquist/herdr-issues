@@ -17,10 +17,10 @@ On screen it is called **Issues**. Its folder and command names say `triage`, th
 | [`gh`](https://cli.github.com/), signed in (optional) | The GitHub gatherer searches issues and pull requests, read-only | That gatherer is shown as failed; the hand-off still goes |
 | macOS | The only system this was checked on. Copy uses `pbcopy`, Open uses `open` | Unverified |
 
-**Models and cost.** Everything runs on `anthropic/claude-haiku-4-5` unless you change it. Reading RentAPlace's 17 groups of issues cost about $0.004 to $0.008 and 4 seconds; the model is asked again only when an issue changed. One hand-off (M or N) made 4 small-model calls and cost about $0.017 in 11 seconds; code caps a press at 6 calls and flags anything over $0.05. A brief is saved, so pressing M again on an unchanged issue costs nothing. Change the model for one project:
+**Models and cost.** Everything runs on `anthropic/claude-haiku-4-5` unless you change it. Reading RentAPlace's 17 groups of issues cost about $0.004 to $0.008 and 4 seconds; the model is asked again only when an issue changed. One hand-off (M or N) made 4 small-model calls and cost about $0.017 in 11 seconds; code caps a press at 6 calls and flags anything over $0.05. A brief is saved, so pressing M again on an unchanged issue costs nothing. Change the model with one command (see [Settings](#settings)):
 
 ```sh
-node ~/.config/herdr-app/mods/triage/triage.mjs config --root <project> --model anthropic/claude-sonnet-4-6
+node ~/.config/herdr-app/mods/triage/triage.mjs config set model anthropic/claude-sonnet-4-6
 ```
 
 `pi --list-models` lists the ids you can use.
@@ -83,13 +83,13 @@ Without `npm run seed` only the board is read. Open the `rentaplace` folder in a
 5. **Get your expectations down.** The rule "never overstate what a ticket says" is in `checks.md`, and the instructions that were changed to meet it are the default. The original instructions are kept so you can see the difference:
 
    ```sh
-   node ~/.config/herdr-app/mods/triage/triage.mjs config --root . --instruction baseline          # before
-   node ~/.config/herdr-app/mods/triage/triage.mjs config --root . --instruction never-overstate   # after (default)
+   node ~/.config/herdr-app/mods/triage/triage.mjs config set instruction baseline          # before
+   node ~/.config/herdr-app/mods/triage/triage.mjs config set instruction never-overstate   # after (default)
    ```
 
    On the same inbox the baseline wrote "3 guests report Beach House checkout works despite being closed; blocks product integrity". No report says anything is blocked. The default wrote "3 guests report Beach House is closed but checkout still works; card is in Todo".
 
-6. **A small or a larger model.** `config --model` (above) switches the model for one project, and the footer of the widget names the model in use and what the last read cost. Run your lab on each and keep the one that passes best.
+6. **A small or a larger model.** `config set model <id>` switches the model, and `config set thinking low` lets the same model think first. The footer of the widget names the model in use and what the last read cost; hover it for the full id and where the setting came from. Run your lab on each and keep the one that passes best ([Settings](#settings)).
 
 7. **Keys, listed under the list.** The legend sits under the list and shows only what you can do now; a key that cannot be used is dim and its tooltip says why.
 
@@ -165,10 +165,10 @@ No separate agent tries to solve the issue. Issues prepares the ground with smal
 
 ## More than the video shows
 
-- **GitHub issues as a source.** `config --root <project> --source github --repo owner/name` reads open issues through `gh` instead of, or with (`local,github`), the project's own files.
+- **GitHub issues as a source.** `config set sources github --project` reads open issues through `gh` instead of, or with (`local,github`), the project's own files. `repo` names the repository when the project's origin is not it.
 - **For agents.** Everything the panel does is a command that prints JSON: `node triage.mjs describe` lists `show`, `refresh`, `gather`, `prompt`, `act`, `rules`, `explain`, `config` and `progress`, the named errors and the environment variables.
 - **Receipts.** Every hand-off is recorded with the message that was sent, the time and the cost, under `~/.cache/herdr-triage`. Issues never writes into your project except `rules --init`, and never creates, edits, closes or comments on an issue.
-- **Which gatherers may start.** `config --root <project> --gatherers code,history`.
+- **Which gatherers may start.** `config set gatherers code,history`.
 
 ### Past conversations: off unless you turn it on
 
@@ -192,13 +192,74 @@ Before you turn it on, know its limits. Redaction recognises a credential by its
 
 A clone of a project has no conversations of its own. `--conversations-of <the original project folder>` counts the original's conversations as this project's; the same rules apply.
 
+## Settings
+
+Issues is configured like every widget from this lesson: one settings file, an optional file in the project, and one command to see and change them.
+
+| Where | File | For |
+|---|---|---|
+| You | `~/.config/herdr-issues/config.json` (or the path in `HERDR_ISSUES_CONFIG`) | your own choices, in every project |
+| A project | `<project>/.herdr/issues.json` | choices a team shares, such as a pinned model or sources |
+
+A value is taken from the strongest place that sets it: default, then your file, then the project's file, then an environment variable. The widget is started by Herdr and has no shell environment of its own, so the files are the normal way; the variables are for tests and the lab.
+
+```sh
+cd <project>
+node ~/.config/herdr-app/mods/triage/triage.mjs config --pretty              # every setting and where it came from
+node ~/.config/herdr-app/mods/triage/triage.mjs config set model anthropic/claude-sonnet-4-6
+node ~/.config/herdr-app/mods/triage/triage.mjs config set maxPressing 3 --project   # into the project's file
+node ~/.config/herdr-app/mods/triage/triage.mjs config unset model
+node ~/.config/herdr-app/mods/triage/triage.mjs config path                  # the two files
+```
+
+`config set` checks the value before it writes, and refuses one that is not valid. Or edit the file yourself:
+
+```json
+{
+  "model": "anthropic/claude-haiku-4-5",
+  "thinking": "off",
+  "refreshSeconds": 300,
+  "maxPressing": 3,
+  "gatherers": "code,history,github"
+}
+```
+
+| Key | Value | Default | What it changes | Variable |
+|---|---|---|---|---|
+| `model` | provider/id | `anthropic/claude-haiku-4-5` | The small model that judges, plans the gatherers and writes the brief | `TRIAGE_MODEL` |
+| `thinking` | `off`, `low`, `medium`, `high` | `off` | How much the model thinks before it answers | `TRIAGE_THINKING` |
+| `refreshSeconds` | 30 to 86400 | `120` | How often the widget reads the sources again. The model is asked only when an issue changed | `TRIAGE_REFRESH_SECONDS` |
+| `sources` | `local`, `github`, `local,github` | the project's inbox and board when it has them, else GitHub | Where issues come from | `TRIAGE_SOURCE` |
+| `repo` | owner/name | the project's origin | The GitHub repository to read and search | `TRIAGE_REPO` |
+| `maxPressing` | 1 to 10 | `5` | The most issues listed under Most pressing | `TRIAGE_MAX_PRESSING` |
+| `gatherers` | names from `code`, `history`, `github`, `packages`, `conversations` | all that are on | Which gatherers the planner may start | `TRIAGE_GATHERERS` |
+| `gatherSeconds` | 5 to 120 | `20` | How long one gatherer may take | `TRIAGE_GATHER_SECONDS` |
+| `rulesFile` | path | `issues-rules.md` in the project, else the widget's `rules.md` | The rules sent with every hand-off | `TRIAGE_RULES` |
+| `instruction` | `never-overstate`, `baseline` | `never-overstate` | The instructions for judging | `TRIAGE_INSTRUCTION` |
+| `gatherInstruction` | `baseline`, `evidence-only`, `absence-is-a-question` | `evidence-only` | The instructions for the brief | `TRIAGE_GATHER_INSTRUCTION` |
+
+`node triage.mjs describe` prints the same table for agents.
+
+**When something is wrong.** A key the widget does not know, a value out of range, or a file that is not valid JSON is never ignored silently: the widget shows a red line starting "Settings:" that names the file and the problem, `config` lists every problem, and the default is used for that entry until you fix it.
+
+**When the small model overstates.** This is the trade-off from the lesson. Try, in order of cost:
+
+```sh
+node ~/.config/herdr-app/mods/triage/triage.mjs config set thinking low                           # same model, thinks first: about 3 times slower
+node ~/.config/herdr-app/mods/triage/triage.mjs config set model anthropic/claude-sonnet-4-6      # a larger model: about 2 times the cost per read
+```
+
+Press **R** in the widget to read again, run your lab on each, and keep the one that passes. `config unset model` goes back.
+
+Past conversations are not a key in these files on purpose: a shared project file must not be able to switch on reading your conversations. They are turned on per project, on your machine only (below).
+
 ## Troubleshooting
 
 - **Command I does nothing.** `install.sh` said why: either `keys.json` did not exist yet (open Herdr once, run `./install.sh` again) or the key was already taken. Add `"cmd-i": "triage.focus"` under `"global"` in `keys.json` yourself.
 - **No Issues panel.** Herdr docks it the first time it sees the folder. If you removed it, add a block with `{ "mod": "triage" }` to your layout. `herdr-app status` lists mod errors.
 - **"Source unavailable: local: neither data/rentaplace.db nor tracker/board.json in …"** The folder of the focused pane is not a project Issues knows how to read. Open RentAPlace, or point it at GitHub issues (above).
 - **Only board cards show.** The database is missing: run `npm run seed` in RentAPlace.
-- **"Couldn't update (…)" with a model error.** Run `pi --list-models`; if the model is not listed, sign in to its provider or pick another with `config --model`.
+- **"Couldn't update (…)" with a model error.** Run `pi --list-models`; if the model is not listed, sign in to its provider or pick another with `config set model <provider/id>`. The message names the model in use and where that setting came from.
 - **M is dim: "No Main conversation in this space".** Start Pi in that space. Issues sends to the Pi named Main, else the first Pi. **N** works without one.
 - **"Couldn't gather context: …"** Nothing was sent. Press **M** again, or **Shift+M** to send the issue and rules without a brief.
 - **GitHub: failed.** `gh auth status` should show a login. The hand-off still goes without it.
@@ -215,6 +276,7 @@ A clone of a project has no conversations of its own. `--conversations-of <the o
 | `src/sources.mjs` | Where issues come from: RentAPlace's files, or GitHub. Read-only |
 | `src/issue.mjs` | Ids, word-for-word merging, content hashes |
 | `src/triage.mjs` | The instructions, the model call, and the check of its reply |
+| `src/settings.mjs` | Every setting, its default and what a valid value is; the files, `config set` and `describe` all use it |
 | `src/gatherers.mjs`, `src/gather.mjs` | The planner, the swarm, and the citation check |
 | `src/redact.mjs` | Removes secrets from past conversations before anything else sees them |
 | `src/handoff.mjs` | The one message Main receives |
@@ -253,8 +315,9 @@ The sibling widgets from the same lesson are [Todos and Memories](https://github
 What was checked for 0.1.0 on 2026-11-15, macOS, Herdr 0.1.14, Pi 1.5.0, Node 25.2.1:
 
 - **Clean install.** A fresh clone of this repository, `./install.sh` into an empty Herdr home: both mods copied, `herdr-app check` passed for `triage` and `triage-menu`. With a `keys.json` present, Command I was added when free, reported as already set on a second run, and left alone when taken.
-- **Checks from the clean clone.** `npm install`, then `npm run check`: types, syntax and 62 tests passed.
-- **End to end from the command line**, with the installed helper, real `claude-haiku-4-5` calls and a fresh clone of RentAPlace after `npm run seed`: `refresh` read 28 tickets, 1 feedback and 8 cards and returned five pressing issues with real ids in 4 s; `gather ticket-0001` planned Code, History and GitHub, kept 13 cited lines and dropped 1, in 11 s for $0.017; `prompt` printed the message with the issue, the brief, the cited code and the rules; `act … send-main --dry-run` and `act … new-main` produced the `hc send` and `space.new` commands. `config --model anthropic/claude-sonnet-4-6` switched the model and read the inbox for $0.013.
+- **Checks from the clean clone.** `npm install`, then `npm run check`: types, syntax and 72 tests passed.
+- **End to end from the command line**, with the installed helper, real `claude-haiku-4-5` calls and a fresh clone of RentAPlace after `npm run seed`: `refresh` read 28 tickets, 1 feedback and 8 cards and returned five pressing issues with real ids in 4 s; `gather ticket-0001` planned Code, History and GitHub, kept 13 cited lines and dropped 1, in 11 s for $0.017; `prompt` printed the message with the issue, the brief, the cited code and the rules; `act … send-main --dry-run` and `act … new-main` produced the `hc send` and `space.new` commands. `config set model anthropic/claude-sonnet-4-6` switched the model and read the inbox for $0.010 to $0.013.
+- **Settings**, same setup: `config set maxPressing 3 --project` wrote `.herdr/issues.json` and the next read listed three; `config set thinking low` wrote the user file and the read took 12 s instead of 4; a model id that does not exist gave "Couldn't update" with the provider's error, the model in use and the command to change it; a user file that was not valid JSON was reported and the defaults were used.
 - **Not checked for 0.1.0:** the panel in a Herdr window after a clean install (docking on first sight, Command I, the legend, the right-click menu, the message arriving in a live Main).
 
 ```sh

@@ -38,6 +38,10 @@ project in the shown space and lets you act on one. Internal ids stay `triage` (
 - **Rules**: one file sent with every hand-off: `<project>/issues-rules.md` when the project has
   one, else the widget's `rules.md`. The legend names the file in use.
 
+## Settings
+
+`src/settings.mjs` is the one home of what can be configured (`KEYS`) and what a valid value is (`checkValue`). Used by the file reader, `config set`, the environment and `describe`. Order, weakest first: default, the user file (`~/.config/herdr-issues/config.json` or `HERDR_ISSUES_CONFIG`), the project file (`<project>/.herdr/issues.json`), saved (the older `config --model …` form, kept per project in the state folder), environment (`TRIAGE_*`), a flag. An unknown key, a bad value or a broken file is a **problem**: reported by `config`, `show` (`settings.problems`) and a red line in the widget, and skipped. Past conversations are never a settings-file key: only `config --conversations on`, per project, on this machine. `config set` writes the user file, or with `--project` the project file: with `rules --init`, the only times Issues writes into a project.
+
 ## Instructions
 
 `src/triage.mjs` `INSTRUCTIONS`: **never-overstate** (default, hill-climbed 2026-11-12; 3 of 25 lines overstated on the installed code, against 19 of 25 for the original) and **baseline** (the original, kept for the course's "before"). Pick it with `--instruction`, `config --instruction` or `TRIAGE_INSTRUCTION`. An unknown name is an error. Changing it re-reads the issues, because the instruction is part of the input hash.

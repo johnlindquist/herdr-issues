@@ -90,7 +90,12 @@ const changeModelHint = (cfg) => `Model ${cfg.model} (${cfg.settings.from.model}
 function gatherWith(cfg, issue, force = false) {
   let chain = Promise.resolve();
   const progress = (p) => (chain = chain.then(() => cfg.store.write("progress.json", { id: issue.id, at: new Date().toISOString(), ...p }).catch(() => {})));
-  return gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force, repo: cfg.repo, only: cfg.gatherers, conversations: cfg.conversations, thinking: cfg.thinking, timeoutMs: cfg.gatherMs, progress }).finally(() => chain);
+  return gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force, repo: cfg.repo, only: cfg.gatherers, conversations: cfg.conversations, thinking: cfg.thinking, timeoutMs: cfg.gatherMs, progress })
+    .catch((e) => {
+      if (e?.code === "GATHER_FAILED") e.message = `${e.message}. ${changeModelHint(cfg)}`;
+      throw e;
+    })
+    .finally(() => chain);
 }
 
 function githubRepoOf(root) {
