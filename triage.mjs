@@ -24,6 +24,7 @@ import { gather, GATHERERS, SWARM_LIMITS, COST_CAP_USD } from "./src/gatherers.m
 import { issueFor, assemblePrompt, loadRules, PROJECT_RULES, DEFAULT_RULES_FILE } from "./src/handoff.mjs";
 import fs from "node:fs";
 import { defaultStateDir, storeFor } from "./src/store.mjs";
+import * as settings from "./src/settings.mjs";
 
 const VERSION = 1;
 const STALE_MS = 30 * 60_000;
@@ -47,22 +48,49 @@ function parseArgs(argv) {
 }
 const expandHome = (p) => (p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p);
 
-// ---------- config: flags, then the project's saved config, then env, then defaults ----------
+// ---------- settings: default < user file < project file < saved on this machine < environment < flag ----------
+// What is valid and where a value comes from: src/settings.mjs. Past conversations are not a
+// settings-file key on purpose: they are switched on per project, on this machine only (`config --conversations on`).
 
 async function configFor(args) {
   const root = path.resolve(expandHome(typeof args.root === "string" ? args.root : process.cwd()));
   const stateDir = path.resolve(expandHome(typeof args.state === "string" ? args.state : defaultStateDir()));
   const store = storeFor(stateDir, root);
   const saved = await store.read("config.json", {});
-  const pick = (k, env) => (typeof args[k] === "string" ? args[k] : saved[k] ?? process.env[env] ?? null);
-  return { root, stateDir, store, source: pick("source", "TRIAGE_SOURCE"), repo: pick("repo", "TRIAGE_REPO") ?? githubRepoOf(root), model: pick("model", "TRIAGE_MODEL") ?? DEFAULT_MODEL, instruction: pick("instruction", "TRIAGE_INSTRUCTION") ?? DEFAULT_INSTRUCTION, rules: pick("rules", "TRIAGE_RULES"), gatherInstruction: pick("gather-instruction", "TRIAGE_GATHER_INSTRUCTION") ?? DEFAULT_GATHER_INSTRUCTION, gatherers: pick("gatherers", "TRIAGE_GATHERERS"), conversations: { mode: pick("conversations", "TRIAGE_CONVERSATIONS") === "on" ? "on" : "off", of: pick("conversations-of", "TRIAGE_CONVERSATIONS_OF") ? path.resolve(expandHome(pick("conversations-of", "TRIAGE_CONVERSATIONS_OF"))) : null } };
+  const user = settings.readFile(settings.userFile());
+  const project = settings.readFile(settings.projectFile(root));
+  const set = settings.resolve({ user: user.values, project: project.values, saved, env: process.env, flags: args, problems: [...user.problems, ...project.problems] });
+  if (set.flagErrors.length) throw new UsageError(set.flagErrors.join("; "));
+  const v = set.values;
+  const local = (k, env) => (typeof args[k] === "string" ? args[k] : saved[k] ?? process.env[env] ?? null);
+  return {
+    root,
+    stateDir,
+    store,
+    saved,
+    settings: { values: v, from: set.from, problems: set.problems, files: { user: user.file, project: project.file } },
+    source: v.sources,
+    repo: v.repo ?? githubRepoOf(root),
+    model: v.model,
+    thinking: v.thinking,
+    maxPressing: v.maxPressing,
+    gatherMs: v.gatherSeconds * 1000,
+    instruction: v.instruction,
+    rules: v.rulesFile ? expandHome(v.rulesFile) : null,
+    gatherInstruction: v.gatherInstruction,
+    gatherers: v.gatherers,
+    conversations: { mode: local("conversations", "TRIAGE_CONVERSATIONS") === "on" ? "on" : "off", of: local("conversations-of", "TRIAGE_CONVERSATIONS_OF") ? path.resolve(expandHome(local("conversations-of", "TRIAGE_CONVERSATIONS_OF"))) : null },
+  };
 }
+
+/** How to change the model, said wherever a model call failed. */
+const changeModelHint = (cfg) => `Model ${cfg.model} (${cfg.settings.from.model}). To use another: node triage.mjs config set model <provider/id>`;
 
 /** One press of gathering, with the plan and each gatherer's state written where the sidebar can read them (`progress <id>`). */
 function gatherWith(cfg, issue, force = false) {
   let chain = Promise.resolve();
   const progress = (p) => (chain = chain.then(() => cfg.store.write("progress.json", { id: issue.id, at: new Date().toISOString(), ...p }).catch(() => {})));
-  return gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force, repo: cfg.repo, only: cfg.gatherers, conversations: cfg.conversations, progress }).finally(() => chain);
+  return gather({ root: cfg.root, store: cfg.store, model: cfg.model, instruction: cfg.gatherInstruction, issue, force, repo: cfg.repo, only: cfg.gatherers, conversations: cfg.conversations, thinking: cfg.thinking, timeoutMs: cfg.gatherMs, progress }).finally(() => chain);
 }
 
 function githubRepoOf(root) {
@@ -99,7 +127,7 @@ async function refresh(cfg, force) {
     if (sourceInfo.every((s) => s.error)) return await saveFailure(store, prev, new SourceUnavailable(sourceInfo.map((s) => s.name).join(","), sourceInfo.map((s) => s.error).join("; ")), cfg, t0, sourceInfo);
     const gatherMs = Date.now() - t0;
     const groups = groupIssues(issues);
-    const inputHash = hashOf({ g: groups.map((g) => [g.id, g.hash]), model: cfg.model, system: hashOf(systemFor(cfg.instruction)) });
+    const inputHash = hashOf({ g: groups.map((g) => [g.id, g.hash]), model: cfg.model, system: hashOf(systemFor(cfg.instruction, cfg.maxPressing)), ...(cfg.thinking === "off" ? {} : { thinking: cfg.thinking }) });
     const base = { version: VERSION, root: cfg.root, sources: sourceInfo, model: cfg.model, instruction: cfg.instruction, groups, hashes: Object.fromEntries(groups.map((g) => [g.id, g.hash])) };
     if (!force && prev?.summary && prev.input_hash === inputHash && !prev.error) {
       const doc = { ...prev, ...base, checked_at: new Date().toISOString(), refresh: { at: new Date().toISOString(), cached: true, gather_ms: gatherMs, model_ms: 0, total_ms: Date.now() - t0, read_groups: 0, reused_groups: groups.length, tokens: null, cost_usd: 0 } };
@@ -115,10 +143,10 @@ async function refresh(cfg, force) {
       const why = Object.fromEntries((prev?.summary?.pressing ?? []).map((p) => [p.id, p.why]));
       input = modelInput(groups, force ? {} : { hashes: prev?.hashes, why });
       try {
-        reply = await callModel({ model: cfg.model, system: systemFor(cfg.instruction), input: input.text });
-        summary = parseSummary(reply.text, groups);
+        reply = await callModel({ model: cfg.model, system: systemFor(cfg.instruction, cfg.maxPressing), input: input.text, thinking: cfg.thinking });
+        summary = parseSummary(reply.text, groups, cfg.maxPressing);
       } catch (/** @type {any} */ e) {
-        modelError = String(e?.message || e);
+        modelError = `${String(e?.message || e)}. ${changeModelHint(cfg)}`;
       }
     } else summary = { headline: "No open issues.", pressing: [] };
     const now = new Date().toISOString();
@@ -204,6 +232,7 @@ async function view(cfg) {
     others: others(groups, taken).filter((g) => !dismissed.has(g.id)).map((g) => withContext(card(g), [g.id])),
     rules,
     conversations: cfg.conversations.mode, // "on" only when this project's setting says so
+    settings: { model: cfg.model, model_from: cfg.settings.from.model, thinking: cfg.thinking, refreshSeconds: cfg.settings.values.refreshSeconds, problems: cfg.settings.problems, files: cfg.settings.files },
     dismissed: [...dismissed].sort(compareIds),
     counts: { issues: groups.reduce((n, g) => n + g.members.length, 0), distinct: groups.length },
     actions: ACTIONS,
@@ -341,6 +370,43 @@ async function explain(cfg, id) {
   return { id: g.id, ids: g.members.map((m) => m.id), pressing_rank: rank >= 0 ? rank + 1 : null, why, text: issueText(g, why), hash: g.hash, prompt, argv: ["pi", "--name", `Explain ${g.id}`, prompt] };
 }
 
+/** Past-conversation and other machine-local choices, stored for one project in the state folder (the older `config --flag value` form). */
+const SAVED_FLAGS = ["source", "repo", "model", "instruction", "rules", "gather-instruction", "gatherers", "conversations", "conversations-of"];
+
+/**
+ * `config`: the effective settings and where each came from. `config set <key> <value> [--project]`
+ * and `config unset <key> [--project]` write the user file (or the project's); `config path` names both.
+ */
+async function configCmd(cfg, args) {
+  const [, sub, key, ...rest] = args._;
+  const files = cfg.settings.files;
+  if (typeof args.project === "string") throw new UsageError("put --project last: config set <key> <value> --project");
+  const file = args.project ? files.project : files.user;
+  if (sub === "path") return { user: files.user, project: files.project, user_exists: fs.existsSync(files.user), project_exists: fs.existsSync(files.project) };
+  if (sub === "set" || sub === "unset") {
+    if (!key || (sub === "set" && !rest.length)) throw new UsageError(`config ${sub} <key>${sub === "set" ? " <value>" : ""} [--project]`);
+    const value = sub === "set" ? settings.setInFile(file, key, rest.join(" ")) : null;
+    const removed = sub === "unset" ? settings.unsetInFile(file, key) : null;
+    const now = await configFor(args);
+    return { [sub]: key, ...(sub === "set" ? { value } : { removed }), file, effective: { value: now.settings.values[key], from: now.settings.from[key] }, problems: now.settings.problems };
+  }
+  if (sub) throw new UsageError(`unknown config command ${sub}; use config, config set, config unset or config path`);
+  const saved = { ...cfg.saved };
+  let wrote = false;
+  for (const k of SAVED_FLAGS) if (typeof args[k] === "string") ((saved[k] = args[k]), (wrote = true));
+  if (wrote) await cfg.store.write("config.json", saved);
+  const now = wrote ? await configFor({ ...args, ...Object.fromEntries(SAVED_FLAGS.map((k) => [k, undefined])) }) : cfg;
+  return {
+    root: cfg.root,
+    settings: Object.fromEntries(Object.keys(settings.KEYS).map((k) => [k, { value: now.settings.values[k], from: now.settings.from[k] }])),
+    problems: now.settings.problems,
+    files,
+    order: settings.LAYERS,
+    conversations: now.conversations,
+    config: saved,
+  };
+}
+
 const DESCRIBE = {
   name: "Issues (herdr-triage)",
   what: "The Issues widget. Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, hand it to Main or to a new Main (after gathering a cited context brief, with the project's rules), view that brief, open its source, dismiss it.",
@@ -352,7 +418,7 @@ const DESCRIBE = {
     act: "act <id> <action> --root <project>: copy (to the clipboard) | send-main --terminal <Main terminal> (gathers, then hc send) | new-main [--apply] (gathers, then prints the herdr space.new command whose task is the prompt; --apply runs it) | brief (same as gather) | open | dismiss | restore. --gathered <key>: the brief with this key was gathered for this hand-off just now (the sidebar gathers as a visible step first), so the receipt says gathered, not reused. --no-context: hand over the issue and the rules without a brief (an explicit choice; a failed gather never sends on its own). --dry-run records the receipt without doing it. Every hand-off's receipt keeps the prompt, the context state, time, cost and the rules file",
     rules: `rules --root <project> [--init]: the one rules file a hand-off uses and its text: --rules <path> or config, else <project>/${PROJECT_RULES}, else the widget's own rules.md. --init copies the default to <project>/${PROJECT_RULES} so it can be edited there`,
     explain: "explain <id> --root <project>: the issue as text, its rank and why, and a Pi command that explains it",
-    config: `config --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id] [--instruction ${Object.keys(INSTRUCTIONS).join("|")}] [--rules <path>] [--gather-instruction ${Object.keys(GATHER_INSTRUCTIONS).join("|")}]: saved per project. --instruction also works on refresh. "baseline" is the original instruction (the course's "before"); the default "${DEFAULT_INSTRUCTION}" is the hill-climbed one`,
+    config: "config --root <project>: the effective settings, each with where it came from (default | user file | project file | saved | environment | flag), any problems found in the files, and both file paths. config set <key> <value> [--project]: check the value, then write it to the user file, or with --project (last on the line) to <project>/.herdr/issues.json. config unset <key> [--project]: remove it. config path: the two files. A problem (an unknown key, a bad value, a file that is not JSON) is reported and that entry is skipped; the weaker layers still apply. Machine-local, per project, never in a file: config --conversations on|off and --conversations-of <folder>. The older form config --model <id> (also --source, --repo, --instruction, --rules, --gather-instruction, --gatherers) still saves a value for one project on this machine (the 'saved' layer)",
     progress: "progress <id> --root <project>: the plan and each gatherer's state for the gather that is running or last ran: {phase: planning | gathering | none, plan [{name, label, look_for, reason}], not_started [{label, why}], states [{label, state: searching | findings | nothing | timeout | error, findings, ms}]}",
     swarm: `gathering is a planner plus a swarm. One small-model call reads the issue and picks which gatherers start and what each looks for (${GATHERERS.map((g) => g.name).join(", ")}); code checks the plan (an unknown name is dropped, an empty plan is code only, code always runs). The chosen gatherers run in parallel, each inside ${SWARM_LIMITS.timeoutMs / 1000} s; a slow or failed one is shown as such and never blocks the hand-off. Code fetches and bounds; the small model only judges relevance; a line is kept only when it cites something code fetched. Everything outside the project is read-only (git, gh search and GETs, the npm registry, Pi session files). Cap per press: at most 6 small-model calls, $${COST_CAP_USD}; a press that reports more is flagged. Past conversations are OFF unless the project turns them on. Settings (config): --gatherers code,history,... (which may start), --conversations on (read this project's past Pi conversations: only sessions whose own header says they were started in this project; user and assistant text only; redacted before any model, cache, receipt or prompt sees it; nothing is written there), --conversations-of <project folder> (count that folder's conversations as this project's, for a clone).`,
     describe: "this description",
@@ -366,10 +432,13 @@ const DESCRIBE = {
     ACTION_UNAVAILABLE: "the action can't run for this issue (the message says why)",
     ACTION_FAILED: "the command that carries the action out failed",
     INVALID: "bad usage or an unknown name",
+    CONFIG_BROKEN: "config set or unset found a settings file that is not valid JSON; nothing was written",
     SOURCE_UNAVAILABLE: "no source could be read",
   },
   gather_limits: LIMITS,
   sources: { local: "<root>/data/rentaplace.db (open support tickets, feedback not rated good) and <root>/tracker/board.json (cards not done)", github: "open issues via `gh issue list` (read-only)" },
+  settings: settings.describeKeys(),
+  settings_files: { user: "~/.config/herdr-issues/config.json, or the path in HERDR_ISSUES_CONFIG", project: "<project>/.herdr/issues.json", order: settings.LAYERS },
   environment: { TRIAGE_MODEL: `default ${DEFAULT_MODEL} (reads the inbox and writes the context brief)`, TRIAGE_INSTRUCTION: `${Object.keys(INSTRUCTIONS).join(" | ")} (default ${DEFAULT_INSTRUCTION})`, TRIAGE_GATHER_INSTRUCTION: `${Object.keys(GATHER_INSTRUCTIONS).join(" | ")} (default ${DEFAULT_GATHER_INSTRUCTION})`, TRIAGE_RULES: "path of the rules file", TRIAGE_SOURCE: "local | github | local,github", TRIAGE_REPO: "owner/name", TRIAGE_STATE: "state dir (default ~/.cache/herdr-triage/default)", TRIAGE_MODEL_CMD: 'JSON argv run instead of Pi; gets {"model","system","input"} on stdin, prints the reply' },
 };
 
@@ -406,10 +475,7 @@ try {
       if (!a1) throw new UsageError("explain <id>");
       out = await explain(cfg, a1);
     } else if (cmd === "config") {
-      const saved = await cfg.store.read("config.json", {});
-      for (const k of ["source", "repo", "model", "instruction", "rules", "gather-instruction", "gatherers", "conversations", "conversations-of"]) if (typeof args[k] === "string") saved[k] = args[k];
-      await cfg.store.write("config.json", saved);
-      out = { root: cfg.root, config: saved };
+      out = await configCmd(cfg, args);
     } else throw new UsageError(`unknown command ${cmd ?? "(none)"}; try describe`);
   }
   process.stdout.write(JSON.stringify(out, null, args.pretty ? 1 : 0) + "\n");

@@ -540,7 +540,7 @@ export function pickGatherers(names) {
 /** The model call of one gatherer: it gets what is left of the gatherer's time, and ends when the gatherer's signal fires. */
 function ask(ctx, system, input) {
   ctx.spent.called = true; // from here on the cost is unknown unless the reply reports it
-  return callModel({ model: ctx.model, system: `${system}\n\n${DATA_NOTE}`, input: fenced(input), timeout: Math.max(1, ctx.deadline - Date.now()), signal: ctx.signal });
+  return callModel({ model: ctx.model, system: `${system}\n\n${DATA_NOTE}`, input: fenced(input), timeout: Math.max(1, ctx.deadline - Date.now()), signal: ctx.signal, thinking: ctx.thinking ?? "off" });
 }
 
 async function runCode(g, ctx) {
@@ -571,12 +571,12 @@ async function runJudge(g, ctx) {
  * @param {any} o
  * @returns {Promise<GathererResult[]>}
  */
-export async function runSwarm({ root, issue, candidates, model, instruction, repo = null, gatherers = GATHERERS, plan = null, conversations = null, agentDir = undefined, timeoutMs = SWARM_LIMITS.timeoutMs, exec = execP, fetchJson: fj = fetchJson, onState = () => {} }) {
+export async function runSwarm({ root, issue, candidates, model, instruction, repo = null, gatherers = GATHERERS, plan = null, conversations = null, agentDir = undefined, timeoutMs = SWARM_LIMITS.timeoutMs, thinking = "off", exec = execP, fetchJson: fj = fetchJson, onState = () => {} }) {
   if (plan) gatherers = /** @type {any} */ (plan.map((p) => GATHERERS.find((g) => g.name === p.name)).filter(Boolean));
   const lookFor = (name) => plan?.find((p) => p.name === name)?.look_for ?? "";
   const titleTerms = termsOf(issue.title, []);
   const terms = candidates.terms.length ? [...new Set([...titleTerms.filter((t) => candidates.terms.includes(t)), ...candidates.terms])] : titleTerms;
-  const shared = { root, issue, candidates, model, instruction, repo, terms, titleTerms, timeoutMs, conversations, agentDir };
+  const shared = { root, issue, candidates, model, instruction, repo, terms, titleTerms, timeoutMs, conversations, agentDir, thinking };
   const states = gatherers.map((g) => ({ name: g.name, label: g.label, state: "searching", findings: 0, ms: 0 }));
   onState(states);
   const t0 = Date.now();
@@ -659,14 +659,14 @@ export function availableGatherers({ only = null, conversations = "off" } = {}) 
  * in its own time box; code checks every citation. Returns the brief document. Throws GatherFailed
  * only when no gatherer at all returned (then nothing is sent unless the person chooses to).
  * `progress(p)` is called as the plan and each gatherer's state change (the sidebar shows them).
- * @param {{ root: string, store: any, model: string, instruction?: string, issue: any, force?: boolean, repo?: string|null, only?: string|null, conversations?: { mode: string, of: string|null }, agentDir?: string, exec?: typeof execP, fetchJson?: typeof fetchJson, timeoutMs?: number, progress?: (p: any) => void }} o
+ * @param {{ root: string, store: any, model: string, instruction?: string, issue: any, force?: boolean, repo?: string|null, only?: string|null, conversations?: { mode: string, of: string|null }, agentDir?: string, exec?: typeof execP, fetchJson?: typeof fetchJson, timeoutMs?: number, thinking?: string, progress?: (p: any) => void }} o
  */
-export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "off", of: null }, agentDir = undefined, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, progress = () => {} }) {
+export async function gather({ root, store, model, instruction = DEFAULT_GATHER_INSTRUCTION, issue, force = false, repo = null, only = null, conversations = { mode: "off", of: null }, agentDir = undefined, exec = execP, fetchJson: fj = fetchJson, timeoutMs = SWARM_LIMITS.timeoutMs, thinking = "off", progress = () => {} }) {
   const t0 = Date.now();
   const candidates = collect({ root, title: issue.title, reports: issue.reports });
   const { ms: collectMs, ...stable } = candidates;
   const { on, off } = availableGatherers({ only, conversations: conversations.mode });
-  const key = hashOf({ v: 5, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations });
+  const key = hashOf({ v: 5, issue: issue.hash, candidates: stable, model, system: hashOf(gatherSystem(instruction)), gatherers: on.map((g) => g.name), conversations, ...(thinking === "off" ? {} : { thinking }) });
   const index = await store.read("gathers.json", {});
   const record = async (entry) => {
     index[issue.id] = { ...entry, issue_hash: issue.hash, key, at: new Date().toISOString() };
@@ -694,7 +694,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   let planReply = null;
   const tp = Date.now();
   try {
-    planReply = await callModel({ model, system: `${planSystem(on)}\n\n${DATA_NOTE}`, input: fenced(planInput(issue, facts)), timeout: SWARM_LIMITS.planMs });
+    planReply = await callModel({ model, system: `${planSystem(on)}\n\n${DATA_NOTE}`, input: fenced(planInput(issue, facts)), timeout: SWARM_LIMITS.planMs, thinking });
     plan = validatePlan(planReply.text, on);
   } catch (/** @type {any} */ e) {
     plan = validatePlan("", on);
@@ -703,7 +703,7 @@ export async function gather({ root, store, model, instruction = DEFAULT_GATHER_
   const planMs = Date.now() - tp;
   const notStarted = [...on.filter((g) => !plan.gatherers.some((p) => p.name === g.name)).map((g) => ({ name: g.name, label: g.label, why: "the planner did not choose it for this issue" })), ...off];
   // 2. The swarm.
-  const results = await runSwarm({ root, issue, candidates, model, instruction, repo, plan: plan.gatherers, conversations, agentDir, timeoutMs, exec, fetchJson: fj, onState: (states) => progress({ phase: "gathering", plan: plan.gatherers, not_started: notStarted, note: plan.note, states: states.map((s) => ({ ...s })) }) });
+  const results = await runSwarm({ root, issue, candidates, model, instruction, repo, plan: plan.gatherers, conversations, agentDir, timeoutMs, thinking, exec, fetchJson: fj, onState: (states) => progress({ phase: "gathering", plan: plan.gatherers, not_started: notStarted, note: plan.note, states: states.map((s) => ({ ...s })) }) });
   const swarmMs = Date.now() - tp - planMs;
   const costs = [planReply?.usage?.cost_usd, ...results.map((r) => r.cost_usd)];
   const cost = costs.some((c) => typeof c === "number") ? costs.reduce((n, c) => n + (typeof c === "number" ? c : 0), 0) : null;

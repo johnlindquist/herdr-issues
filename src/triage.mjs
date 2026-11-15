@@ -41,10 +41,11 @@ export const DEFAULT_INSTRUCTION = "never-overstate";
 export const SYSTEM = INSTRUCTIONS[DEFAULT_INSTRUCTION];
 
 /** The system prompt for an instruction name; an unknown name is an error, not a silent fallback. */
-export function systemFor(name = DEFAULT_INSTRUCTION) {
+export function systemFor(name = DEFAULT_INSTRUCTION, maxPressing = MAX_PRESSING) {
   const s = INSTRUCTIONS[name];
   if (!s) throw Object.assign(new Error(`unknown instruction ${name} (use ${Object.keys(INSTRUCTIONS).join(" or ")})`), { code: "INVALID" });
-  return s;
+  // The limit is a setting (maxPressing); the instructions name it once, in their second line.
+  return maxPressing === MAX_PRESSING ? s : s.replace(`(at most ${MAX_PRESSING})`, `(at most ${maxPressing})`);
 }
 
 // ---------- the model call (swappable: TRIAGE_MODEL_CMD) ----------
@@ -85,7 +86,7 @@ function runProcess(cmd, argv, input, timeout, signal = null) {
  * argv array) replaces Pi: it gets {"model","system","input"} on stdin and prints the reply.
  * @returns {Promise<ModelReply>}
  */
-export async function callModel({ model, system, input, timeout = 90_000, signal = null }) {
+export async function callModel({ model, system, input, timeout = 90_000, signal = null, thinking = "off" }) {
   const t0 = Date.now();
   const custom = process.env.TRIAGE_MODEL_CMD;
   if (custom) {
@@ -97,7 +98,7 @@ export async function callModel({ model, system, input, timeout = 90_000, signal
   }
   const r = await runProcess(
     "pi",
-    ["-p", "--mode", "json", "--no-session", "-ne", "-nt", "-ns", "-np", "-nc", "--no-mcp", "--no-themes", "--thinking", "off", "--model", model, "--system-prompt", system],
+    ["-p", "--mode", "json", "--no-session", "-ne", "-nt", "-ns", "-np", "-nc", "--no-mcp", "--no-themes", "--thinking", thinking, "--model", model, "--system-prompt", system],
     input,
     timeout,
     signal,
@@ -150,7 +151,7 @@ export function modelInput(groups, previous = {}) {
 // ---------- what the model says, checked ----------
 
 /** Boundary check on the model reply: ids must exist; each group is claimed once. @param {string} text @param {Group[]} groups @returns {Summary} */
-export function parseSummary(text, groups) {
+export function parseSummary(text, groups, maxPressing = MAX_PRESSING) {
   const cleaned = text.replace(/```(?:json)?/g, "");
   const a = cleaned.indexOf("{");
   const b = cleaned.lastIndexOf("}");
@@ -172,7 +173,7 @@ export function parseSummary(text, groups) {
     ids.forEach((x) => claimed.add(x));
     const title = String(p.title ?? "").trim().slice(0, 80) || groups.find((g) => g.id === ids[0]).members[0].title;
     pressing.push({ id: ids[0], ids, title, why: String(p.why ?? "").trim().slice(0, 160) });
-    if (pressing.length >= MAX_PRESSING) break;
+    if (pressing.length >= maxPressing) break;
   }
   return { headline: String(v.headline ?? "").trim().slice(0, 200), pressing };
 }
