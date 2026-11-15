@@ -1,4 +1,4 @@
-# Herdr Issues (herdr-triage)
+# Herdr Issues
 
 Issues is a sidebar widget for the [Herdr](https://herdr.dev/) app. It reads a project's support inbox, page feedback and board, has a small model pick the few most pressing with one line on why, and hands one to Main with context that a swarm of small models gathered first.
 
@@ -28,8 +28,8 @@ node ~/.config/herdr-app/mods/triage/triage.mjs config set model anthropic/claud
 ## Install
 
 ```sh
-git clone https://github.com/johnlindquist/herdr-triage
-cd herdr-triage
+git clone https://github.com/johnlindquist/herdr-issues
+cd herdr-issues
 ./install.sh
 ```
 

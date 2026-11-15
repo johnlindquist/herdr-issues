@@ -413,7 +413,7 @@ async function configCmd(cfg, args) {
 }
 
 const DESCRIBE = {
-  name: "Issues (herdr-triage)",
+  name: "Issues (herdr-issues)",
   what: "The Issues widget. Gathers a project's incoming issues (its app inbox and tracker board, and/or GitHub issues), has a small model pick the few most pressing with a one-line why each (duplicates merged, every claim keeps its source ids), and acts on one: copy it, hand it to Main or to a new Main (after gathering a cited context brief, with the project's rules), view that brief, open its source, dismiss it.",
   commands: {
     show: "show --root <project>: the last refresh, no model call. state: ready | empty | missing (never refreshed) | stale (older than 30 min) | failed (model failed; last summary kept) | unavailable (no source could be read); busy: a refresh is running. Each issue has context {state: none | ready | failed, error} (its context brief) and sent (the last hand-off); rules names the rules file a hand-off would use",

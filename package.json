@@ -1,12 +1,12 @@
 {
-  "name": "herdr-triage",
+  "name": "herdr-issues",
   "version": "0.1.0",
   "description": "Issues sidebar for the Herdr app: reads a project's support inbox, page feedback and board, has a small model pick the most pressing, and hands one to Main with gathered context",
   "license": "MIT",
   "author": "John Lindquist",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/johnlindquist/herdr-triage.git"
+    "url": "git+https://github.com/johnlindquist/herdr-issues.git"
   },
   "type": "module",
   "engines": {
