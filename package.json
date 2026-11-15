@@ -1,13 +1,23 @@
 {
   "name": "herdr-triage",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Issues sidebar for the Herdr app: reads a project's support inbox, page feedback and board, has a small model pick the most pressing, and hands one to Main with gathered context",
+  "license": "MIT",
+  "author": "John Lindquist",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnlindquist/herdr-triage.git"
+  },
   "type": "module",
-  "description": "Triage sidebar for the Herdr app: the most pressing incoming issues, and what to do with each",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "check": "sh fence.sh",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.20.5"
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
   }
 }

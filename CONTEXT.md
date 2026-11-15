@@ -4,7 +4,7 @@
 written with gpui-kit like herdr-todos) that shows the few most pressing incoming issues for the
 project in the shown space and lets you act on one. Internal ids stay `triage` (mod folder
 `mods/triage`, menu `mods/triage-menu`, command prefix `triage.`, helper `triage.mjs`, repo
-`herdr-triage`): renaming them would orphan the `{"mod": "triage"}` block already in John's layout.
+`herdr-triage`): renaming them would orphan the `{"mod": "triage"}` block in layouts that already hold it.
 "Triage" is the verb for what the model does.
 
 ## Words
@@ -79,7 +79,7 @@ rules, in that order, nothing else). New Main is Herdr's `space.new {argv, task}
 
 ## Checks
 
-`checks.md`: Do / Expect / Never against the real inbox, run with `node ~/dev/herdr-pi-widget/kit/check.mjs checks.md --runs 3`.
+`checks.md`: Do / Expect / Never against the real inbox of a seeded RentAPlace clone (`../rentaplace`, or `RENTAPLACE=<folder>`), run with the lab kit from https://github.com/johnlindquist/herdr-pi-widget: `node <herdr-pi-widget>/kit/check.mjs checks.md --runs 3`.
 
 ## Who decides what
 

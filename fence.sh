@@ -2,6 +2,7 @@
 # The Fence: types, syntax and tests behind one command (`npm run check`).
 set -e
 cd "$(dirname "$0")"
+PATH="$PWD/node_modules/.bin:$PATH" # tsc comes from `npm install`
 tsc -p jsconfig.json
 tsc -p tsconfig.node.json
 tsc -p menu/jsconfig.json

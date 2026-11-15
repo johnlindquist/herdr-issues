@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { step, widgetDirection, blockOf, collapseResize, applyCollapse, loadCollapsed, returnTarget, tip, HEADER_PX } from "../nav.js";
 
@@ -50,7 +49,9 @@ test("Esc returns to the pane that had the keyboard, else Main", () => {
 
 test("every widget carries the same navigation rules (copies match)", () => {
   const mine = fs.readFileSync(path.join(here, "..", "nav.js"), "utf8");
-  const others = [path.join(os.homedir(), "dev/herdr-todos/nav.js"), path.join(os.homedir(), "dev/herdr-triage/nav.js"), path.join(os.homedir(), "dev/herdr-todos/memories/nav.js")].filter((f) => fs.existsSync(f));
+  // The sibling widgets, when they are checked out next to this repo (https://github.com/johnlindquist/herdr-todos).
+  const sibling = path.join(here, "..", "..", "herdr-todos");
+  const others = [path.join(sibling, "nav.js"), path.join(sibling, "memories/nav.js")].filter((f) => fs.existsSync(f));
   for (const f of others) assert.ok(fs.readFileSync(f, "utf8") === mine, `${f} differs from this copy`);
 });
 

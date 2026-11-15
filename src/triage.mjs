@@ -26,7 +26,7 @@ Only use ids that appear in the input. Never invent issues, numbers or facts tha
 Reply with JSON only:
 {"headline": "...", "pressing": [{"ids": ["<id>", "..."], "title": "<short title, at most 60 characters>", "why": "..."}]}`;
 
-// Hill-climbed on 2026-11-12 (.cache/day2-rewrite/issues-grade: Haiku, 5 runs x 5 lines, a separate
+// Hill-climbed on 2026-11-12 (Haiku, 5 runs x 5 lines, a separate
 // judge model checking each why against the reports it cites): the baseline overstated 20 of 25
 // lines, this one 6 of 25. The baseline stays selectable so the "before" can be shown.
 const NEVER_OVERSTATE = `${BASELINE}
