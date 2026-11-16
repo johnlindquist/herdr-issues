@@ -118,6 +118,15 @@ One file, `nav.js`, holds the rules; the same file is copied into herdr-todos (`
   collapsed, selects the last-selected (else first) issue. `Esc` gives the keyboard back to the
   pane that had it, else the space's Main.
 - `↑/↓` (`k/j`), `Home/End`, `PgUp/PgDn` move inside one widget and stop at its ends.
+- **Shared key**: a key that means the same thing in every widget (`KEYS` in `nav.js`): Enter the
+  main action, Space toggle, E edit, D dismiss, Delete remove, R refresh, C copy, O open the
+  source, ⌘Z or U undo, ⇧F10 or the Menu key the menu. The view asks `isKey(verb, k)`; Issues'
+  own letters (M, N, B, ⇧M, ⇧N) must pass `keyProblems`, which `test/nav.test.mjs` checks.
+- **Undo**: for `UNDO_MS` (6 s) after an action that has an opposite, a bar under the title
+  offers Undo and ⌘Z runs the opposite. In Issues only dismiss has one (restore). A hand-off is
+  **final** (an agent has the prompt); copy, open, view brief and refresh change **nothing**.
+  ⌘Z then, or after the time is over, shows a message and does nothing else: `undoPress` in
+  `nav.js` is the one home of that decision and of the wording.
   `Tab`/`Shift+Tab` move to the widget below/above (`pane.go`). `−` or a header click collapses.
 - Collapsed: one header line ("Issues · 5 pressing"), saved in the mod's localStorage, and the
   block is resized to 36 px when it shares a column, so the others get the height

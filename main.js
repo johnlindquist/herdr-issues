@@ -15,8 +15,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props } from "herdr";
-import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport } from "./nav.js";
+import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props, notify } from "herdr";
+import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport, KEYS, isKey, did, undoPress, remember, announce, undoBar } from "./nav.js";
 import { createFrame, frameParts } from "./frame.js";
 import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, settingsTip, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
 
@@ -91,6 +91,7 @@ export default class Issues extends View {
     this.errors = {}; // root -> last helper error
     this.selected = {}; // root -> selected issue id
     this.notice = null;
+    this.last = null; // the last action, for Undo (the rules are in nav.js)
     this.before = null; // what had the keyboard before ⌘I
     this.collapsed = loadCollapsed(localStorage, NAME);
     this.handle = cx.focus_handle();
@@ -307,8 +308,13 @@ export default class Issues extends View {
       this.setCollapsed(!this.collapsed);
       return true;
     }
-    if (k === "refresh" || k === "r") {
+    if (k === "refresh" || isKey("refresh", k)) {
+      remember(this, did("Refresh", null, "nothing"), cx);
       if (this.root) this.refresh(this.root, cx, true);
+      return true;
+    }
+    if (k === "undo" || isKey("undo", k)) {
+      this.undoLast(cx);
       return true;
     }
     const dir = widgetDirection(k);
@@ -317,7 +323,7 @@ export default class Issues extends View {
       return true;
     }
     if (this.collapsed) return false;
-    if (k === "shift-f10" || k === "menu-key") {
+    if (isKey("menu", k)) {
       const item = this.actionItem(doc);
       if (item) this.menu(item);
       return true;
@@ -404,6 +410,7 @@ export default class Issues extends View {
         if (v) {
           this.view = v;
           this.notice = costLine(b);
+          remember(this, did("View brief", null, "nothing"), cx);
         }
         return cx.notify();
       }
@@ -426,13 +433,30 @@ export default class Issues extends View {
       else if (handoff) {
         if (real === "new-main") run(r.ok.command.name, r.ok.command.args); // a new space with Pi, its first message the prompt
         this.notice = sentNotice(r.ok);
+        remember(this, did(real === "send-main" ? "Send to Main" : "New Main"), cx); // an agent has the prompt: no taking it back
         if (this.view?.id === id) this.view = { ...this.view, doc: { ...this.view.doc, last_sent: { at: r.ok.at, action: real, context: r.ok.context, prompt: r.ok.prompt } } };
         this.load(root, cx);
       } else {
         this.notice = { copy: "Copied", open: "Opened", dismiss: "Dismissed", restore: "Restored" }[real];
+        if (real === "dismiss") remember(this, did(`Dismissed: ${item?.title ?? id}`, { id, root }), cx);
+        else if (real === "copy") remember(this, did("Copy", null, "nothing"), cx);
+        else if (real === "open") remember(this, did("Open source", null, "nothing"), cx);
         if (real === "dismiss" || real === "restore") this.load(root, cx);
       }
       cx.notify();
+    });
+  }
+
+  // ⌘Z, U or the bar's Undo: restores the issue just dismissed, or says why nothing can be undone.
+  undoLast(cx) {
+    const { reverse, notice } = undoPress(this.last);
+    const u = /** @type {{ id: string, root: string } | null} */ (reverse);
+    if (!u) return announce(this, notice, cx, notify);
+    this.last = null;
+    cx.spawn(async (cx) => {
+      const r = await callHelper(["act", u.id, "restore", "--root", u.root], 75_000);
+      announce(this, r.ok ? notice : `Couldn't undo: ${r.error}`, cx, notify);
+      if (r.ok && this.root === u.root) this.load(u.root, cx);
     });
   }
 
@@ -538,7 +562,8 @@ export default class Issues extends View {
           key("tab", "Tab", "Next", null, null),
           key("col", "−", "Collapse", null, () => this.setCollapsed(true)),
           key("esc", "Esc", "Back", null, () => this.giveBack()),
-          key("ref", "R", "Refresh", null, (cx) => this.root && this.refresh(this.root, cx, true)),
+          key("ref", KEYS.refresh.shown, "Refresh", null, (cx) => this.root && this.refresh(this.root, cx, true)),
+          key("undo", KEYS.undo.shown, "Undo", null, (cx) => this.undoLast(cx)),
           ...(this.frameLegend ?? []).map(([k, label]) => key(`frame-${label}`, k, label, null, null)),
         ];
     return v_flex()
@@ -696,7 +721,7 @@ export default class Issues extends View {
             .text_color(t.dim)
             .cursor_pointer()
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
-            .tooltip(busy ? "Updating…" : tip("Refresh issues", "R"))
+            .tooltip(busy ? "Updating…" : tip("Refresh issues", KEYS.refresh.shown))
             .on_click((_e, cx) => {
               cx.stop_propagation();
               root && this.refresh(root, cx, true);
@@ -725,8 +750,16 @@ export default class Issues extends View {
       .when(Boolean(parts.note), (el) => el.child(parts.note))
       .when(Boolean(parts.drop), (el) => el.child(parts.drop));
     if (this.collapsed) return shell;
+    const undo = undoBar({ div, h_flex }, t, this.last, {
+      onUndo: (cx) => this.undoLast(cx),
+      onClose: (cx) => {
+        this.last = null;
+        cx.notify();
+      },
+    });
 
     return shell
+      .when(Boolean(undo), (el) => el.child(undo))
       .when(Boolean(doc?.headline), (el) => el.child(div().id("issues-headline").px(14).mb(6).h(38).flex_none().overflow_hidden().whitespace_normal().text_size(12).text_color(t.foreground).tooltip(doc.headline).child(doc.headline)))
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
       .when(Boolean(settingsProblemLine(doc)), (el) => el.child(div().id("issues-settings-problem").px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(t.blocked).tooltip((doc?.settings?.problems ?? []).join("\n")).child(settingsProblemLine(doc))))
@@ -742,7 +775,7 @@ export default class Issues extends View {
           .border_color(t.border)
           .text_size(11)
           .text_color(t.dim)
-          .child(div().flex_1().truncate().child(footer))
+          .child(div().flex_1().truncate().when(Boolean(this.notice), (el) => el.text_color(t.foreground)).child(footer))
           .child(div().id("issues-model").flex_none().tooltip(doc ? modelTip(doc) : "").child(doc ? `${modelLabel(doc)}${cost ? ` · $${cost.toFixed(4)}` : ""}` : "")),
       );
   }

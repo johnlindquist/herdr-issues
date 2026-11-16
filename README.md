@@ -104,9 +104,12 @@ Without `npm run seed` only the board is read. Open the `rentaplace` folder in a
    | **C** | Copy the issue |
    | **O** | Open the source (a board card or a GitHub issue) |
    | **D** | Dismiss |
+   | **Command Z** or **U** | Undo a dismiss, for a few seconds |
    | **R** | Read the issues again |
    | **Tab** / **Shift+Tab** | The widget below or above |
    | **−** | Collapse to one line: "Issues · 5 pressing" |
+
+   **Undo.** For a few seconds after you dismiss an issue, a bar under the title shows it with **Undo**; click it or press **Command Z** and the issue is back in the list (an agent: `herdr-app do triage.undo`). A hand-off cannot be taken back, because an agent already has the prompt, and Copy, Open and View brief change nothing. Press **Command Z** after one of those, or when the few seconds are over, and the line at the bottom says so ("Send to Main can't be undone", "Copy has nothing to undo", "Too late to undo: …", "Nothing to undo") instead of doing nothing. The same keys mean the same thing in Todos and Memories.
 
    Handing an issue to an agent other than Main is not one of the keys; [Handing an issue to another agent](#handing-an-issue-to-another-agent) has a ready prompt for adding it.
 

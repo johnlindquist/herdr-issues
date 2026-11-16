@@ -15,8 +15,13 @@
 //   (Herdr's virtual lists forbid handlers in rows, and plain scroll areas can't be scrolled
 //   from code, so the widgets window their lists themselves with these functions.)
 // - The mouse wheel scrolls the widget under the pointer only.
+// - A key means the same thing in every widget (KEYS below): Enter is the item's main action,
+//   Space toggles, E edits, D dismisses, Delete removes, R refreshes, C copies, O opens the source,
+//   ⌘Z (or U) undoes, ⇧F10 opens the menu. A widget's own actions take letters keyProblems() accepts.
+// - Undo: for UNDO_MS after an action that can be reversed, a bar offers Undo and ⌘Z reverses it.
+//   ⌘Z at any other time says why nothing happened (undoPress): never a silent key.
 
-export const NAV_VERSION = 1;
+export const NAV_VERSION = 2;
 export const PAGE = 5;
 export const COLLAPSE_KEY = "-";
 export const HEADER_PX = 36; // a collapsed widget's height
@@ -104,6 +109,7 @@ export const SHARED_KEYS = [
   { keys: "↑↓", label: "Select" },
   { keys: "Tab", label: "Next widget" },
   { keys: "−", label: "Collapse" },
+  { keys: "⌘Z", label: "Undo" },
   { keys: "Esc", label: "Back to Main" },
 ];
 
@@ -210,4 +216,190 @@ export function estimateViewport(tree, mod, windowPx, chromePx) {
   const weights = kids.reduce((n, c) => n + (typeof c?.size?.weight === "number" ? c.size.weight : typeof c?.size?.px === "number" ? 0 : 1), 0);
   const mine = typeof me.size?.px === "number" ? me.size.px : ((windowPx - px) * (typeof me.size?.weight === "number" ? me.size.weight : 1)) / Math.max(1, weights);
   return Math.max(60, mine - chromePx);
+}
+
+// ---------- item keys: one meaning per key in every widget ----------
+
+/** The keys every widget gives the same meaning. `shown` is what legends and tooltips print. */
+export const KEYS = {
+  primary: { keys: ["enter"], shown: "Enter" },
+  toggle: { keys: ["space"], shown: "Space" },
+  edit: { keys: ["e"], shown: "E" },
+  dismiss: { keys: ["d"], shown: "D" },
+  remove: { keys: ["delete", "backspace"], shown: "Del" },
+  refresh: { keys: ["r"], shown: "R" },
+  copy: { keys: ["c"], shown: "C" },
+  open: { keys: ["o"], shown: "O" },
+  undo: { keys: ["cmd-z", "u"], shown: "⌘Z" },
+  menu: { keys: ["shift-f10", "menu-key"], shown: "⇧F10" },
+};
+
+/** Keys navigation and the title bar already use: never an action's key. */
+export const TAKEN_KEYS = ["up", "down", "j", "k", "home", "end", "pageup", "pagedown", "tab", "shift-tab", "escape", COLLAPSE_KEY, "shift-o", "shift-w", "shift-up", "shift-down", "shift-left", "shift-right"];
+
+/**
+ * True when `keystroke` is the key for `verb`. Widgets compare keys only through this.
+ * @param {keyof typeof KEYS} verb
+ * @param {string} keystroke
+ */
+export function isKey(verb, keystroke) {
+  return KEYS[verb].keys.includes(keystroke);
+}
+
+/**
+ * What is wrong with a widget's own action keys: a shared key given another meaning, a shared
+ * meaning put on another key, a navigation key reused, or one key for two actions. Empty when fine.
+ * An action named like a shared verb ("copy", "dismiss") is that verb.
+ * @param {{ name: string, key: string }[]} actions
+ */
+export function keyProblems(actions) {
+  /** @type {string[]} */
+  const out = [];
+  /** @type {Record<string, { keys: string[], shown: string }>} */
+  const shared = KEYS;
+  /** @type {Map<string, string>} */
+  const seen = new Map();
+  for (const a of actions) {
+    const owner = Object.keys(shared).find((verb) => shared[verb].keys.includes(a.key));
+    if (shared[a.name] && !shared[a.name].keys.includes(a.key)) out.push(`${a.name} is on "${a.key}"; every widget uses ${shared[a.name].shown}`);
+    else if (owner && owner !== a.name) out.push(`"${a.key}" means ${owner} in every widget; ${a.name} needs another key`);
+    if (TAKEN_KEYS.includes(a.key)) out.push(`"${a.key}" is a navigation or title bar key; ${a.name} needs another key`);
+    const other = seen.get(a.key);
+    if (other) out.push(`"${a.key}" is used by both ${other} and ${a.name}`);
+    seen.set(a.key, a.name);
+  }
+  return out;
+}
+
+// ---------- undo: a few seconds to take back the last action ----------
+
+export const UNDO_MS = 6000; // how long the last action can be undone
+export const NOTICE_MS = 4000; // how long an undo message stays
+/** Where an undo message shows: "footer" (the widget's own notice line) or "toast" (Herdr's notification). */
+export const NOTICE_STYLE = "footer";
+
+const clip = (text, n = 90) => {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+};
+
+/**
+ * The record of an action a widget just ran. With `reverse` (whatever the widget needs to run the
+ * opposite action) it can be undone and `label` says what happened ("Dismissed: Use Codicons").
+ * Without one, `label` is the action's name ("Send to Main") and `why` says which kind it is:
+ * "final" (it had an effect that can't be taken back) or "nothing" (it changed nothing).
+ * @param {string} label
+ * @param {unknown} [reverse]
+ * @param {"final" | "nothing"} [why]
+ * @returns {{ label: string, reverse: unknown, why: "final" | "nothing", at: number }}
+ */
+export function did(label, reverse = null, why = "final", now = Date.now()) {
+  return { label: clip(label), reverse: reverse ?? null, why, at: now };
+}
+
+/** True while the last action can still be undone. */
+export function canUndo(last, now = Date.now()) {
+  return Boolean(last && last.reverse != null && now - last.at <= UNDO_MS);
+}
+
+/**
+ * ⌘Z was pressed: the `reverse` to run (or null) and the message to show. Always a message.
+ * @returns {{ reverse: unknown, notice: string }}
+ */
+export function undoPress(last, now = Date.now()) {
+  if (!last) return { reverse: null, notice: "Nothing to undo" };
+  if (last.reverse != null) return canUndo(last, now) ? { reverse: last.reverse, notice: `Undone: ${last.label}` } : { reverse: null, notice: `Too late to undo: ${last.label}` };
+  if (now - last.at > UNDO_MS) return { reverse: null, notice: "Nothing to undo" };
+  return { reverse: null, notice: last.why === "nothing" ? `${last.label} has nothing to undo` : `${last.label} can't be undone` };
+}
+
+/**
+ * Remembers the action a view just ran, and redraws when its undo time is over so the bar leaves.
+ * @param {any} view
+ * @param {ReturnType<typeof did>} done
+ * @param {any} cx
+ */
+export function remember(view, done, cx) {
+  view.last = done;
+  if (done.reverse != null) cx.timer.after(UNDO_MS + 40, (cx) => cx.notify());
+}
+
+/**
+ * Shows a short message for NOTICE_MS: in the view's notice line (`view.notice`), or as a Herdr
+ * notification when NOTICE_STYLE is "toast" and the view passes Herdr's `notify`.
+ * @param {any} view
+ * @param {string} text
+ * @param {any} cx
+ * @param {((n: { title: string, level?: "info" }) => unknown) | null} [notify]
+ */
+export function announce(view, text, cx, notify = null, style = NOTICE_STYLE) {
+  if (style === "toast" && notify) return void notify({ title: text, level: "info" });
+  view.notice = text;
+  cx.timer.after(NOTICE_MS, (cx) => {
+    if (view.notice !== text) return;
+    view.notice = null;
+    cx.notify();
+  });
+  cx.notify();
+}
+
+/**
+ * The undo bar under a widget's header, or null when the last action can't be undone (any more).
+ * `ui` is { div, h_flex } from the UI kit, passed in so this file stays free of imports.
+ * @param {{ div: any, h_flex: any }} ui
+ * @param {Record<string, string>} t the theme
+ * @param {any} last
+ * @param {{ onUndo: (cx: any) => void, onClose: (cx: any) => void, now?: number }} o
+ */
+export function undoBar(ui, t, last, o) {
+  if (!canUndo(last, o.now ?? Date.now())) return null;
+  const stop = (_e, cx) => cx.stop_propagation();
+  return ui
+    .h_flex()
+    .id("undo-bar")
+    .mx(10)
+    .mb(6)
+    .px(10)
+    .h(28)
+    .gap(8)
+    .flex_none()
+    .items_center()
+    .rounded(8)
+    .bg(t.raised)
+    .text_size(11.5)
+    .tooltip(last.label)
+    .child(ui.div().flex_1().min_w(0).truncate().text_color(t.muted).child(last.label))
+    .child(
+      ui
+        .h_flex()
+        .id("undo-bar-undo")
+        .flex_none()
+        .gap(5)
+        .items_center()
+        .cursor_pointer()
+        .tooltip(tip("Undo", KEYS.undo.shown))
+        .on_mouse_down("left", stop)
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          o.onUndo(cx);
+        })
+        .child(ui.div().font_medium().text_color(t.accent).child("Undo"))
+        .child(ui.div().px(4).rounded(3).border(1).border_color(t.border).text_size(10).text_color(t.dim).child(KEYS.undo.shown)),
+    )
+    .child(
+      ui
+        .div()
+        .id("undo-bar-close")
+        .flex_none()
+        .px(3)
+        .cursor_pointer()
+        .text_color(t.dim)
+        .tooltip("Hide")
+        .on_mouse_down("left", stop)
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          o.onClose(cx);
+        })
+        .child("×"),
+    );
 }

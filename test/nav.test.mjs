@@ -72,3 +72,10 @@ test("selection stays in view: the list moves only when the selection would leav
   assert.equal(estimateViewport(tree, "a", 1036, 100), 650);
   assert.equal(estimateViewport(tree, "zzz", 900, 100), 200);
 });
+
+test("the keys of Issues' own actions fit the keys every widget shares", async () => {
+  const { keyProblems } = await import("../nav.js");
+  const { ACTIONS } = await import("../src/actions.mjs");
+  const { BARE } = await import("../surface.js");
+  assert.deepEqual(keyProblems([...ACTIONS, ...BARE]), []);
+});

@@ -128,6 +128,10 @@ test("CLI: missing, then ready with a cached second refresh, then act and dismis
   const receipts = fs.readFileSync(path.join(first.state, "projects", fs.readdirSync(path.join(first.state, "projects"))[0], "receipts.jsonl"), "utf8").trim().split("\n");
   assert.equal(receipts.length, 4);
   assert.equal(cli(["act", "nope", "copy", "--root", root], env).err.error.code, "NOT_FOUND");
+  // The widget's Undo: restore takes the dismiss back, and the issue is pressing again.
+  assert.equal(cli(["act", "card:closed-home", "restore", "--root", root], env).code, 0);
+  const back = cli(["show", "--root", root], env);
+  assert.deepEqual([back.out.pressing.map((p) => p.id), back.out.dismissed], [["card:closed-home"], []]);
 });
 
 test("CLI: a failed model keeps the last summary and says failed; no source says unavailable", () => {
