@@ -15,7 +15,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props, notify } from "herdr";
+import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport, KEYS, isKey, did, undoPress, remember, announce, undoBar } from "./nav.js";
 import { createFrame, frameParts } from "./frame.js";
 import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, settingsTip, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
@@ -451,11 +451,11 @@ export default class Issues extends View {
   undoLast(cx) {
     const { reverse, notice } = undoPress(this.last);
     const u = /** @type {{ id: string, root: string } | null} */ (reverse);
-    if (!u) return announce(this, notice, cx, notify);
+    if (!u) return announce(this, notice, cx);
     this.last = null;
     cx.spawn(async (cx) => {
       const r = await callHelper(["act", u.id, "restore", "--root", u.root], 75_000);
-      announce(this, r.ok ? notice : `Couldn't undo: ${r.error}`, cx, notify);
+      announce(this, r.ok ? notice : `Couldn't undo: ${r.error}`, cx);
       if (r.ok && this.root === u.root) this.load(u.root, cx);
     });
   }

@@ -77,14 +77,6 @@ test("the undo bar leaves when the time is over; a message leaves unless a newer
   assert.equal(view.notice, null);
 });
 
-test("a message can go to Herdr's notifications instead of the widget's notice line", () => {
-  const view = { notice: null };
-  const posted = [];
-  announce(view, "Send to Main can't be undone", fakeCx(), (n) => posted.push(n), "toast");
-  assert.deepEqual(posted, [{ title: "Send to Main can't be undone", level: "info" }]);
-  assert.equal(view.notice, null);
-});
-
 test("the undo bar is drawn only while the action can be undone, and names the key", () => {
   const made = [];
   const el = () => {

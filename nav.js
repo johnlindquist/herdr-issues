@@ -275,8 +275,6 @@ export function keyProblems(actions) {
 
 export const UNDO_MS = 6000; // how long the last action can be undone
 export const NOTICE_MS = 4000; // how long an undo message stays
-/** Where an undo message shows: "footer" (the widget's own notice line) or "toast" (Herdr's notification). */
-export const NOTICE_STYLE = "footer";
 
 const clip = (text, n = 90) => {
   const s = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -325,15 +323,12 @@ export function remember(view, done, cx) {
 }
 
 /**
- * Shows a short message for NOTICE_MS: in the view's notice line (`view.notice`), or as a Herdr
- * notification when NOTICE_STYLE is "toast" and the view passes Herdr's `notify`.
+ * Shows a short message for NOTICE_MS in the view's notice line (`view.notice`, drawn in its footer).
  * @param {any} view
  * @param {string} text
  * @param {any} cx
- * @param {((n: { title: string, level?: "info" }) => unknown) | null} [notify]
  */
-export function announce(view, text, cx, notify = null, style = NOTICE_STYLE) {
-  if (style === "toast" && notify) return void notify({ title: text, level: "info" });
+export function announce(view, text, cx) {
   view.notice = text;
   cx.timer.after(NOTICE_MS, (cx) => {
     if (view.notice !== text) return;
