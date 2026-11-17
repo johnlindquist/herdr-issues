@@ -18,7 +18,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { agents, focused, panes, exec, home, appHome, run, theme, nextCommand, shared, openOverlay, layout, setShared, closeOverlay, props } from "herdr";
 import { step, widgetDirection, COLLAPSE_KEY, loadCollapsed, applyCollapse, returnTarget, tip, keepInView, wheelTop, maxTop, fitCount, estimateViewport, KEYS, isKey, did, undoPress, remember, announce, undoBar } from "./nav.js";
 import { createFrame, frameParts } from "./frame.js";
-import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, settingsTip, actionItem, sentNotice, costLine, gatherFailed, BARE } from "./surface.js";
+import { modelLabel, modelTip, settingsProblemLine, refreshMs, disabledReason, legendEntries, menuItems, rowStatusLines, briefViewLines, briefViewFor, viewBelongs, settingsLine, settingsTip, actionItem, sentNotice, costLine, gatherFailed, BARE, sortedLine, listSections, draftViewLines, draftReason } from "./surface.js";
 
 const NAME = "triage"; // mod folder and command prefix; people see "Issues"
 const TITLE = "Issues";
@@ -41,6 +41,7 @@ const windowHeight = () => {
 // Fixed row heights: the virtual list places rows by these, so rows clip their text to fit
 // (the full text is in the row's tooltip, Copy and the right-click menu).
 const H = { section: 28, pressing: 96, other: 60, status: 18, line: 16 };
+const DRAFT_PANE = { min: 140, max: 300, share: 0.42 }; // the selected ticket's draft, under the list
 
 /** One call to the helper; JSON in, JSON out. */
 async function callHelper(argv, timeout = 120_000) {
@@ -80,7 +81,7 @@ function targetsIn(space) {
   return { main: main?.address ?? null, mainPane: main?.pane ?? null };
 }
 
-const LONG = { Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Close: "Close the brief", Scroll: "Scroll the brief" };
+const LONG = { Draft: "Read the draft (nothing is sent)", Next: "Next widget", Back: "Back to Main", Refresh: "Refresh issues", Close: "Close the brief", Scroll: "Scroll the brief" };
 const KIND = { github: "GitHub", inbox: "Support", feedback: "Feedback", board: "Tracker" };
 
 export default class Issues extends View {
@@ -238,18 +239,14 @@ export default class Issues extends View {
   }
 
   // Pressing first, then the rest: one list for ↑/↓.
+  // With tickets that wait for a person, those come first (surface.js listSections).
   items(doc) {
-    return [...(doc?.pressing ?? []).map((p, i) => ({ ...p, rank: i + 1 })), ...(doc?.others ?? [])];
+    return listSections(doc).flatMap((s) => s.items);
   }
 
   // The virtual list's rows: section labels and issues.
   rows(doc) {
-    const pressing = (doc?.pressing ?? []).map((p, i) => ({ type: "issue", item: { ...p, rank: i + 1 } }));
-    const rest = (doc?.others ?? []).map((o) => ({ type: "issue", item: o }));
-    return [
-      ...(pressing.length ? [{ type: "section", label: "MOST PRESSING" }, ...pressing] : []),
-      ...(rest.length ? [{ type: "section", label: `ALSO OPEN · ${rest.length}` }, ...rest] : []),
-    ];
+    return listSections(doc).flatMap((s) => [{ type: "section", label: s.label }, ...s.items.map((item) => ({ type: "issue", item }))]);
   }
 
   // The issue actions are about: the open brief's issue while a brief is open (clicked or typed), else the selection.
@@ -264,11 +261,21 @@ export default class Issues extends View {
 
   rowHeight(r) {
     if (r.type === "section") return H.section;
-    return (r.item.rank ? H.pressing : H.other) + rowStatusLines(r.item, this.gathering.has(r.item.id), this.progress[r.item.id]).length * H.status;
+    return (r.item.rank ? H.pressing : H.other) + (sortedLine(r.item) ? H.status : 0) + rowStatusLines(r.item, this.gathering.has(r.item.id), this.progress[r.item.id]).length * H.status;
+  }
+
+  // The draft pane's height: only while the selected ticket has a draft and no brief or draft is open in full.
+  paneHeight() {
+    const doc = this.docs[this.root];
+    if (this.view || !this.selectedItem(doc)?.draft) return 0;
+    const all = estimateViewport(layout(), NAME, windowHeight(), CHROME_PX);
+    return Math.round(Math.max(DRAFT_PANE.min, Math.min(DRAFT_PANE.max, all * DRAFT_PANE.share)));
   }
 
   viewport() {
-    return this.viewH ?? estimateViewport(layout(), NAME, windowHeight(), CHROME_PX);
+    const pane = this.paneHeight();
+    if (pane !== this.paneWas) ((this.paneWas = pane), (this.viewH = null)); // the list's measured height is stale once the pane comes or goes
+    return this.viewH ?? Math.max(60, estimateViewport(layout(), NAME, windowHeight(), CHROME_PX) - pane);
   }
 
   // Keep the selection on screen: move the list only when the selection would leave it.
@@ -289,7 +296,7 @@ export default class Issues extends View {
     const list = this.items(doc);
     if (this.view && !this.collapsed) {
       // The brief is open: Esc or B closes it, the list keys scroll it, M and N still hand over.
-      if (k === "escape" || k === "b") {
+      if (k === "escape" || (this.view.kind === "draft" ? isKey("primary", k) : k === "b")) {
         this.view = null;
         return true;
       }
@@ -337,6 +344,16 @@ export default class Issues extends View {
       return true;
     }
     const item = this.actionItem(doc); // with a brief open: the issue it shows, or none
+    // Enter reads the selected ticket's draft in full. It only opens a view: nothing is ever sent to a guest from here.
+    if (isKey("primary", k) && doc?.sorted && doc.sorted.drafts.state !== "none") {
+      const why = draftReason(item);
+      if (why) this.notice = `${why}.`;
+      else {
+        this.view = { kind: "draft", id: item.id, root: this.root, doc: item, top: 0 };
+        this.notice = "Draft: waiting for a person. Nothing is sent from Issues.";
+      }
+      return true;
+    }
     const bare = BARE.find((b) => b.key === k || b.keyLabel === k || (k === b.key.slice(-1).toUpperCase()));
     if (bare && item) {
       if (!gatherFailed(item)) this.notice = "Sending without context is offered only after gathering failed. M and N gather first.";
@@ -350,7 +367,8 @@ export default class Issues extends View {
   }
 
   viewLines() {
-    return this.view ? briefViewLines(this.view.doc, this.chars()) : [];
+    if (!this.view) return [];
+    return this.view.kind === "draft" ? draftViewLines(this.view.doc, this.chars()) : briefViewLines(this.view.doc, this.chars());
   }
 
   // How many characters fit on a line of the brief view (the panel's width, when the layout says it).
@@ -473,10 +491,11 @@ export default class Issues extends View {
     const pad = item.rank ? 23 : 0;
     const gathering = this.gathering.has(item.id);
     const lines = rowStatusLines(item, gathering, this.progress[item.id]);
-    const status = lines.join("\n");
+    const sorted = sortedLine(item);
+    const status = [sorted, ...lines].filter(Boolean).join("\n");
     return v_flex()
       .id(`issue-${item.id}`)
-      .h((item.rank ? H.pressing - 4 : H.other - 4) + lines.length * H.status)
+      .h((item.rank ? H.pressing - 4 : H.other - 4) + (lines.length + (sorted ? 1 : 0)) * H.status)
       .mx(6)
       .px(10)
       .py(6)
@@ -513,6 +532,7 @@ export default class Issues extends View {
       )
       .when(Boolean(item.why), (el) => el.child(div().pl(pad).h(36).flex_none().overflow_hidden().whitespace_normal().text_size(11.8).text_color(t.muted).child(item.why)))
       .child(div().pl(pad).flex_none().truncate().text_size(10.8).text_color(t.dim).child(`${item.id} · ${meta}`))
+      .when(Boolean(sorted), (el) => el.child(div().id(`issue-sorted-${item.id}`).pl(pad).h(H.status - 2).flex_none().truncate().text_size(10.8).text_color(item.sorted?.waits ? t.blocked : t.muted).child(sorted)))
       .children(
         lines.map((line, i) =>
           h_flex()
@@ -555,10 +575,12 @@ export default class Issues extends View {
         .child(div().px(4).rounded(3).border(1).border_color(t.border).text_size(10).text_color(t.foreground).child(e.key))
         .child(div().text_size(10.5).text_color(t.dim).child(e.label));
     const rules = this.docs[this.root]?.rules;
+    const drafts = this.docs[this.root]?.sorted?.drafts?.state;
     const second = this.view
-      ? [key("scroll", "↑↓", "Scroll", null, null), key("close", "B / Esc", "Close", null, (cx) => ((this.view = null), cx.notify()))]
+      ? [key("scroll", "↑↓", "Scroll", null, null), key("close", this.view.kind === "draft" ? "Enter / Esc" : "B / Esc", "Close", null, (cx) => ((this.view = null), cx.notify()))]
       : [
           key("sel", "↑↓", "Select", null, null),
+          ...(drafts && drafts !== "none" ? [key("draft", KEYS.primary.shown, "Draft", draftReason(item), (cx) => this.command("enter", cx) && cx.notify())] : []),
           key("tab", "Tab", "Next", null, null),
           key("col", "−", "Collapse", null, () => this.setCollapsed(true)),
           key("esc", "Esc", "Back", null, () => this.giveBack()),
@@ -612,6 +634,27 @@ export default class Issues extends View {
         cx.notify();
       })
       .child(v_flex().children(lines.slice(this.view.top, this.view.top + fit + 1).map((l) => div().h(H.line).flex_none().overflow_hidden().whitespace_nowrap().text_size(11.3).text_color(tone[l.tone]).when(l.tone === "head", (x) => x.font_medium()).child(l.text || " "))));
+  }
+
+  // Under the list while the selected ticket has a draft: the top of the same lines Enter opens in full.
+  draftPane(t, item) {
+    const h = this.paneHeight();
+    const fit = Math.max(3, Math.floor((h - 12) / H.line) - 1);
+    const lines = draftViewLines(item, this.chars());
+    const tone = { head: t.foreground, body: t.muted, dim: t.dim, warn: t.blocked };
+    const more = lines.length > fit;
+    return v_flex()
+      .id("issues-draft")
+      .h(h)
+      .flex_none()
+      .overflow_hidden()
+      .px(14)
+      .pt(6)
+      .border_t(1)
+      .border_color(t.border)
+      .tooltip(tip("Read the draft (nothing is sent)", KEYS.primary.shown))
+      .children(lines.slice(0, more ? fit - 1 : fit).map((l) => div().h(H.line).flex_none().overflow_hidden().whitespace_nowrap().text_size(11.3).text_color(tone[l.tone]).when(l.tone === "head" || l.tone === "warn", (x) => x.font_medium()).child(l.text || " ")))
+      .when(more, (el) => el.child(div().h(H.line).flex_none().text_size(10.8).text_color(t.accent).child(`Enter reads all ${lines.length} lines`)));
   }
 
   // The list shows rows from `top` and clips the rest; the wheel moves `top` (nav.js wheelTop).
@@ -764,6 +807,7 @@ export default class Issues extends View {
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
       .when(Boolean(settingsProblemLine(doc)), (el) => el.child(div().id("issues-settings-problem").px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(t.blocked).tooltip((doc?.settings?.problems ?? []).join("\n")).child(settingsProblemLine(doc))))
       .child(this.view ? this.brief(t) : this.list(t, rows, item, hasKeys))
+      .when(!this.view && Boolean(item?.draft), (el) => el.child(this.draftPane(t, item)))
       .when(Boolean(doc), (el) => el.child(this.legend(t, this.actionItem(doc))))
       .child(
         h_flex()

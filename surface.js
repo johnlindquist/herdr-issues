@@ -214,12 +214,28 @@ export function briefViewLines(doc, width = 44) {
 const OWNER = { booking: "Booking", pricing: "Pricing", nobody: "nobody yet" };
 const ownerName = (o) => String(o ?? "").split(" / ").map((x) => OWNER[x] ?? x).join(" / ");
 
+/** The sorter's reason in a few words for a row: "money", "unsure (money 0.65, owner 0.30)". Words it does not know are kept as written. */
+export function shortReason(reason) {
+  return String(reason ?? "")
+    .split(" · ")
+    .map((part) => {
+      if (!part.startsWith("unsure: ")) return part;
+      const bits = part.slice(8).split("; ").map((b) => {
+        const m = /^money probability ([\d.]+) is between/.exec(b);
+        const o = /^owner confidence ([\d.]+) is under/.exec(b);
+        return m ? `money ${m[1]}` : o ? `owner ${o[1]}` : b;
+      });
+      return `unsure (${bits.join(", ")})`;
+    })
+    .join(" · ");
+}
+
 /** The sorter's line on a ticket's row: its owner, and why it waits for a person when it does. Null when the ticket was not sorted. */
 export function sortedLine(item) {
   const s = item?.sorted;
   if (!s && !item?.draft) return null;
   const parts = [];
-  if (s?.waits) parts.push(`Waits for you: ${s.reason}`);
+  if (s?.waits) parts.push(`Waits for you: ${shortReason(s.reason)}`);
   if (s) parts.push(`Owner: ${ownerName(s.owner)}`);
   if (item.draft) parts.push("Draft waiting");
   return parts.join(" · ");
