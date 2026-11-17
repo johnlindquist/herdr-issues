@@ -8,6 +8,8 @@
 //   node triage.mjs gather <id> --root <project> [--force]          the context brief for one issue, with citations
 //   node triage.mjs prompt <id> --root <project> [--no-context]     exactly what a hand-off would send
 //   node triage.mjs act <id> <copy|send-main|new-main|brief|open|dismiss|restore> --root <project> [--terminal t] [--apply] [--dry-run] [--no-context]
+//   node triage.mjs sorted  --root <project>                        the tickets as the project's sorter left them: owner, and which wait for a person
+//   node triage.mjs draft <ticket id> --root <project>              one draft beside its ticket (read-only; nothing is ever sent)
 //   node triage.mjs rules   --root <project> [--init]
 //   node triage.mjs explain <id> --root <project>
 //   node triage.mjs config  --root <project> [--source local|github|local,github] [--repo owner/name] [--model provider/id]
@@ -25,6 +27,7 @@ import { issueFor, assemblePrompt, loadRules, PROJECT_RULES, DEFAULT_RULES_FILE 
 import fs from "node:fs";
 import { defaultStateDir, storeFor } from "./src/store.mjs";
 import * as settings from "./src/settings.mjs";
+import { readSorted, sortedFor, summary as sortedSummary, waitingOrder } from "./src/sorted.mjs";
 
 const VERSION = 1;
 const STALE_MS = 30 * 60_000;
@@ -79,6 +82,8 @@ async function configFor(args) {
     rules: v.rulesFile ? expandHome(v.rulesFile) : null,
     gatherInstruction: v.gatherInstruction,
     gatherers: v.gatherers,
+    tagsFile: expandHome(v.tagsFile),
+    draftsFolder: expandHome(v.draftsFolder),
     conversations: { mode: v.conversations === "off" ? "off" : "on", of: local("conversations-of", "TRIAGE_CONVERSATIONS_OF") ? path.resolve(expandHome(local("conversations-of", "TRIAGE_CONVERSATIONS_OF"))) : null },
   };
 }
@@ -197,6 +202,47 @@ const card = (g) => {
   return { id: g.id, ids: g.members.map((m) => m.id), title: i.title, kind: i.kind, count: g.members.length, url: i.url, where: i.where, labels: i.labels, last_at: lastAt(g) || null };
 };
 
+/** The support tickets among the groups (the only issues a sorter tags or a drafter answers). */
+const ticketsOf = (groups) => groups.flatMap((g) => g.members).filter((m) => m.kind === "inbox");
+
+/** `sorted`: the sorted tickets and their drafts, straight from the inbox and the two places. Plain code: no model, and no refresh needed. */
+async function sortedCmd(cfg) {
+  const issues = [];
+  for (const s of pickSources(cfg)) {
+    try {
+      issues.push(...(await s.list()));
+    } catch (/** @type {any} */ e) {
+      if (!(e instanceof SourceUnavailable)) throw e;
+    }
+  }
+  const tickets = issues.filter((m) => m.kind === "inbox");
+  const sorted = readSorted({ root: cfg.root, tagsFile: cfg.tagsFile, draftsFolder: cfg.draftsFolder, tickets });
+  const rows = tickets
+    .map((t) => ({ t, s: sortedFor([t.id], sorted) }))
+    .map(({ t, s }) => ({ id: t.id, title: t.title, owner: s.sorted?.owner ?? null, money: s.sorted?.money ?? null, unsure: s.sorted?.unsure ?? null, waits_for: s.sorted?.waits ? "a person" : null, reason: s.sorted?.reason ?? null, draft: s.draft ? s.draft.status : null, sorted: s.sorted }));
+  const waiting = rows.filter((r) => r.waits_for).sort((a, b) => waitingOrder(a, b, compareIds));
+  const strip = ({ sorted: _s, ...r }) => r;
+  return { root: cfg.root, ...sortedSummary(sorted), counts: { tickets: tickets.length, sorted: rows.filter((r) => r.owner).length, not_sorted: rows.filter((r) => !r.owner).length, waiting: waiting.length, drafts: rows.filter((r) => r.draft).length }, waiting: waiting.map(strip), tickets: rows.map(strip) };
+}
+
+/** `draft <ticket>`: one draft beside its ticket: the guest's question, the facts code looked up, the reply, and that it waits for a person. */
+async function draftCmd(cfg, id) {
+  const issues = [];
+  for (const s of pickSources(cfg)) {
+    try {
+      issues.push(...(await s.list()));
+    } catch (/** @type {any} */ e) {
+      if (!(e instanceof SourceUnavailable)) throw e;
+    }
+  }
+  const tickets = issues.filter((m) => m.kind === "inbox");
+  if (!tickets.some((t) => t.id === id)) throw Object.assign(new Error(`no support ticket ${id} in the inbox`), { code: "NOT_FOUND" });
+  const sorted = readSorted({ root: cfg.root, tagsFile: cfg.tagsFile, draftsFolder: cfg.draftsFolder, tickets });
+  const s = sortedFor([id], sorted);
+  if (!s.draft) throw Object.assign(new Error(`no draft for ${id} (drafts: ${sorted.drafts.state}${sorted.drafts.dropped.length ? `; ${sorted.drafts.dropped.length} line(s) dropped` : ""})`), { code: "NO_DRAFT" });
+  return { id, owner: s.sorted?.owner ?? null, waits_for: "a person", why_it_waits: s.sorted?.reason ?? null, ...s.draft, sends: false, note: sorted.drafts.note, folder: sorted.drafts.folder };
+}
+
 async function view(cfg) {
   const doc = await cfg.store.read("triage.json", null);
   const dismissed = new Set(await cfg.store.read("dismissed.json", []));
@@ -222,6 +268,14 @@ async function view(cfg) {
   } catch (/** @type {any} */ e) {
     rules = { path: null, source: null, error: String(e.message) };
   }
+  // What the project's sorter and drafter wrote about its support tickets (plain code; src/sorted.mjs).
+  const sorted = readSorted({ root: cfg.root, tagsFile: cfg.tagsFile, draftsFolder: cfg.draftsFolder, tickets: ticketsOf(groups) });
+  const withSorted = (item) => {
+    const s = sortedFor([...item.ids, ...(item.merged ?? []).flatMap((m) => m.ids)], sorted);
+    return { ...item, ...(s.sorted ? { sorted: s.sorted } : {}), ...(s.draft ? { draft: s.draft } : {}) };
+  };
+  const shownPressing = pressing.map((p) => withSorted(withContext(p, [p.id, ...p.merged.map((m) => m.id)])));
+  const shownOthers = others(groups, taken).filter((g) => !dismissed.has(g.id)).map((g) => withSorted(withContext(card(g), [g.id])));
   return {
     version: VERSION,
     root: cfg.root,
@@ -233,8 +287,11 @@ async function view(cfg) {
     updated_at: doc?.updated_at ?? null,
     checked_at: doc?.checked_at ?? null,
     headline: doc?.summary?.headline ?? null,
-    pressing: pressing.map((p) => withContext(p, [p.id, ...p.merged.map((m) => m.id)])),
-    others: others(groups, taken).filter((g) => !dismissed.has(g.id)).map((g) => withContext(card(g), [g.id])),
+    pressing: shownPressing,
+    others: shownOthers,
+    // Tickets that wait for a person (money, or the sorter was unsure): their ids, money first. They stay in pressing / others too.
+    waiting: [...shownPressing, ...shownOthers].filter((x) => x.sorted?.waits).sort((a, b) => waitingOrder(a, b, compareIds)).map((x) => x.id),
+    sorted: sortedSummary(sorted),
     rules,
     conversations: cfg.conversations.mode, // "on" unless a setting turned it off
     conversations_from: cfg.settings.from.conversations,
@@ -427,6 +484,8 @@ const DESCRIBE = {
     config: "config --root <project>: the effective settings, each with where it came from (default | user file | project file | saved | environment | flag), any problems found in the files, and both file paths. config set <key> <value> [--project]: check the value, then write it to the user file, or with --project (last on the line) to <project>/.herdr/issues.json. config unset <key> [--project]: remove it. config path: the two files. A problem (an unknown key, a bad value, a file that is not JSON) is reported and that entry is skipped; the weaker layers still apply. Past conversations are on by default: config --root <project> --conversations off turns them off for one project on this machine (on turns them back on), config set conversations off for every project, and off in any layer wins. Machine-local, per project, never in a file: --conversations-of <folder>. The older form config --model <id> (also --source, --repo, --instruction, --rules, --gather-instruction, --gatherers) still saves a value for one project on this machine (the 'saved' layer)",
     progress: "progress <id> --root <project>: the plan and each gatherer's state for the gather that is running or last ran: {phase: planning | gathering | none, plan [{name, label, look_for, reason}], not_started [{label, why}], states [{label, state: searching | findings | nothing | timeout | error, findings, ms}]}",
     swarm: `gathering is a planner plus a swarm. One small-model call reads the issue and picks which gatherers start and what each looks for (${GATHERERS.map((g) => g.name).join(", ")}); code checks the plan (an unknown name is dropped, an empty plan is code only, code always runs). The chosen gatherers run in parallel, each inside ${SWARM_LIMITS.timeoutMs / 1000} s; a slow or failed one is shown as such and never blocks the hand-off. Code fetches and bounds; the small model only judges relevance; a line is kept only when it cites something code fetched. Everything outside the project is read-only (git, gh search and GETs, the npm registry, Pi session files). Cap per press: at most 6 small-model calls, $${COST_CAP_USD}; a press that reports more is flagged. Past conversations are ON unless a setting turns them off, and the planner may pick them like any other gatherer: only sessions whose own header says they were started in this project; user and assistant text only; redacted before any model, cache, receipt or prompt sees it; nothing is written there; the kept excerpts go to the small model set in model. Settings (config): --gatherers code,history,... (which may start), --conversations off (do not read this project's past Pi conversations; also TRIAGE_CONVERSATIONS=off, or conversations: off in a settings file; off anywhere wins), --conversations-of <project folder> (count that folder's conversations as this project's, for a clone).`,
+    sorted: "sorted --root <project>: the support tickets as the project's sorter left them, plain code, no model, no refresh needed. tags {state: none (no tags file) | empty (a file, no usable line) | ready, file, tagged, waiting, dropped + dropped_lines [{line, reason}] (a line that is not the expected shape: never shown), repeated (a second line for a ticket: the first wins), ticket_gone [ids] (a tag for a ticket that is not open in the inbox: not shown)}; drafts {state: none (no drafts folder) | empty | ready, folder, waiting, dropped + dropped_lines (also a reply that states an amount its own facts do not hold), unknown_ticket [ids] (a draft for a ticket that is not in the inbox: not shown), rejected, no_draft, sends: false}; waiting [tickets that wait for a person, money first]; tickets [{id, title, owner: booking | pricing | nobody | null (not sorted), money, unsure, waits_for: 'a person' | null, reason, draft}]. A ticket waits for a person when its tag says money or says the sorter was unsure; code decides that from the tag, not from a waitsFor field. `show` carries the same: each issue has sorted {owner, money, unsure, waits, reason} and draft when it has them, plus waiting [ids] and sorted {tags, drafts}",
+    draft: "draft <ticket id> --root <project>: one draft beside its ticket: question {subject, message, from} (from the inbox), facts (what code looked up), reply, status 'waiting for a person', written_by, ask_if_wrong, owner, why_it_waits. Read-only. There is no action that sends a draft to a guest: sends is always false",
     describe: "this description",
   },
   actions: ACTIONS,
@@ -440,6 +499,7 @@ const DESCRIBE = {
     INVALID: "bad usage or an unknown name",
     CONFIG_BROKEN: "config set or unset found a settings file that is not valid JSON; nothing was written",
     SOURCE_UNAVAILABLE: "no source could be read",
+    NO_DRAFT: "draft <id>: that ticket has no draft that waits for a person (none written, or its line was dropped; `sorted` says which)",
   },
   gather_limits: LIMITS,
   sources: { local: "<root>/data/rentaplace.db (open support tickets, feedback not rated good) and <root>/tracker/board.json (cards not done)", github: "open issues via `gh issue list` (read-only)" },
@@ -480,6 +540,11 @@ try {
     } else if (cmd === "explain") {
       if (!a1) throw new UsageError("explain <id>");
       out = await explain(cfg, a1);
+    } else if (cmd === "sorted") {
+      out = await sortedCmd(cfg);
+    } else if (cmd === "draft") {
+      if (!a1) throw new UsageError("draft <ticket id>");
+      out = await draftCmd(cfg, a1);
     } else if (cmd === "config") {
       out = await configCmd(cfg, args);
     } else throw new UsageError(`unknown command ${cmd ?? "(none)"}; try describe`);

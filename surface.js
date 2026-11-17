@@ -208,3 +208,65 @@ export function briefViewLines(doc, width = 44) {
   }
   return out;
 }
+
+// ---------- Sorted tickets and drafts (what the project's sorter and drafter wrote; src/sorted.mjs reads them) ----------
+
+const OWNER = { booking: "Booking", pricing: "Pricing", nobody: "nobody yet" };
+const ownerName = (o) => String(o ?? "").split(" / ").map((x) => OWNER[x] ?? x).join(" / ");
+
+/** The sorter's line on a ticket's row: its owner, and why it waits for a person when it does. Null when the ticket was not sorted. */
+export function sortedLine(item) {
+  const s = item?.sorted;
+  if (!s && !item?.draft) return null;
+  const parts = [];
+  if (s?.waits) parts.push(`Waits for you: ${s.reason}`);
+  if (s) parts.push(`Owner: ${ownerName(s.owner)}`);
+  if (item.draft) parts.push("Draft waiting");
+  return parts.join(" · ");
+}
+
+/** The list's rows in order: the tickets that wait for a person first, then Most pressing and Also open without them. With nothing waiting it is the list as it always was. */
+export function listSections(doc) {
+  const pressing = (doc?.pressing ?? []).map((p, i) => ({ ...p, rank: i + 1 }));
+  const rest = doc?.others ?? [];
+  const all = [...pressing, ...rest];
+  const waiting = (doc?.waiting ?? []).map((id) => all.find((x) => x.id === id)).filter(Boolean);
+  const held = new Set(waiting.map((x) => x.id));
+  const out = [];
+  if (waiting.length) out.push({ label: `WAITING FOR YOU · ${waiting.length}`, items: waiting });
+  const p = pressing.filter((x) => !held.has(x.id));
+  const o = rest.filter((x) => !held.has(x.id));
+  if (p.length) out.push({ label: "MOST PRESSING", items: p });
+  if (o.length) out.push({ label: `ALSO OPEN · ${o.length}`, items: o });
+  return out;
+}
+
+/** Whether Enter can open a draft for this issue, and why not. */
+export function draftReason(item) {
+  if (!item) return "Select an issue first";
+  return item.draft ? null : "No draft for this issue";
+}
+
+/** The draft beside its ticket as fixed-height lines: that it waits for a person, the guest's question, the facts code looked up, the reply. */
+export function draftViewLines(item, width = 44) {
+  /** @type {{ text: string, tone: "head"|"body"|"dim"|"warn" }[]} */
+  const out = [];
+  const d = item?.draft;
+  if (!d) return out;
+  const add = (text, tone = "body", indent = "") => wrap(text, width - indent.length).forEach((l, i) => out.push({ text: (i ? indent : "") + l, tone: /** @type {any} */ (tone) }));
+  const gap = () => out.push({ text: "", tone: "body" });
+  add("Draft · waiting for a person", "warn");
+  add("Nothing is sent from Issues. A person reads it and sends it.", "dim");
+  if (item.sorted) add(`Owner: ${ownerName(item.sorted.owner)}${item.sorted.waits ? ` · waits for you: ${item.sorted.reason}` : ""}`, "dim");
+  gap();
+  add(`The guest asked (${d.ticket}${d.question?.from ? `, ${d.question.from}` : ""}):`, "head");
+  add(d.question?.subject ?? "", "body");
+  add(d.question?.message ?? "", "body");
+  gap();
+  add("Facts code looked up:", "head");
+  for (const f of d.facts) add(`- ${f}`, "body", "  ");
+  gap();
+  add(`The reply${d.written_by ? `, written by ${ownerName(d.written_by)}` : ""}${d.ask_if_wrong ? ` (if it is wrong, ask ${ownerName(d.ask_if_wrong)})` : ""}:`, "head");
+  add(d.reply, "body");
+  return out;
+}
