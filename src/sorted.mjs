@@ -202,7 +202,8 @@ export function summary(sorted) {
   };
 }
 
-/** Waiting first by why: money, then unsure only; ties by id as everywhere else. */
+/** The waiting group's order: plainly money first, then money the sorter was unsure about, then unsure only; ties by id as everywhere else. */
+const waitRank = (x) => (x.sorted.money && !x.sorted.unsure ? 0 : x.sorted.money ? 1 : 2);
 export function waitingOrder(a, b, compareIds) {
-  return Number(b.sorted.money) - Number(a.sorted.money) || compareIds(a.id, b.id);
+  return waitRank(a) - waitRank(b) || compareIds(a.id, b.id);
 }

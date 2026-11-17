@@ -41,7 +41,7 @@ const windowHeight = () => {
 // Fixed row heights: the virtual list places rows by these, so rows clip their text to fit
 // (the full text is in the row's tooltip, Copy and the right-click menu).
 const H = { section: 28, pressing: 96, other: 60, status: 18, line: 16 };
-const DRAFT_PANE = { min: 140, max: 300, share: 0.42 }; // the selected ticket's draft, under the list
+const DRAFT_PANE = { min: 110, max: 300, share: 0.45, list: 200 }; // the selected ticket's draft, under the list
 
 /** One call to the helper; JSON in, JSON out. */
 async function callHelper(argv, timeout = 120_000) {
@@ -269,7 +269,9 @@ export default class Issues extends View {
     const doc = this.docs[this.root];
     if (this.view || !this.selectedItem(doc)?.draft) return 0;
     const all = estimateViewport(layout(), NAME, windowHeight(), CHROME_PX);
-    return Math.round(Math.max(DRAFT_PANE.min, Math.min(DRAFT_PANE.max, all * DRAFT_PANE.share)));
+    // The list keeps room for two tickets; in a window too short for both, the pane gives way and Enter still opens the draft.
+    const h = Math.round(Math.min(DRAFT_PANE.max, all * DRAFT_PANE.share, all - DRAFT_PANE.list));
+    return h >= DRAFT_PANE.min ? h : 0;
   }
 
   viewport() {
@@ -807,7 +809,7 @@ export default class Issues extends View {
       .when(Boolean(banner), (el) => el.child(div().px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(tone).child(banner)))
       .when(Boolean(settingsProblemLine(doc)), (el) => el.child(div().id("issues-settings-problem").px(14).py(4).flex_none().whitespace_normal().text_size(11.5).text_color(t.blocked).tooltip((doc?.settings?.problems ?? []).join("\n")).child(settingsProblemLine(doc))))
       .child(this.view ? this.brief(t) : this.list(t, rows, item, hasKeys))
-      .when(!this.view && Boolean(item?.draft), (el) => el.child(this.draftPane(t, item)))
+      .when(this.paneHeight() > 0, (el) => el.child(this.draftPane(t, item)))
       .when(Boolean(doc), (el) => el.child(this.legend(t, this.actionItem(doc))))
       .child(
         h_flex()

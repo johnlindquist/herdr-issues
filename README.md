@@ -171,9 +171,52 @@ No separate agent tries to solve the issue. Issues prepares the ground with smal
 ## More than the video shows
 
 - **GitHub issues as a source.** `config set sources github --project` reads open issues through `gh` instead of, or with (`local,github`), the project's own files. `repo` names the repository when the project's origin is not it.
-- **For agents.** Everything the panel does is a command that prints JSON: `node triage.mjs describe` lists `show`, `refresh`, `gather`, `prompt`, `act`, `rules`, `explain`, `config` and `progress`, the named errors and the environment variables.
+- **For agents.** Everything the panel does is a command that prints JSON: `node triage.mjs describe` lists `show`, `refresh`, `gather`, `prompt`, `act`, `rules`, `explain`, `config`, `progress`, `sorted` and `draft`, the named errors and the environment variables.
 - **Receipts.** Every hand-off is recorded with the message that was sent, the time and the cost, under `~/.cache/herdr-triage`. Issues never writes into your project except `rules --init`, and never creates, edits, closes or comments on an issue.
 - **Which gatherers may start.** `config set gatherers code,history`.
+
+### Sorted tickets, and a draft beside its ticket
+
+Some projects sort their support tickets before you sit down: a small script tags each new ticket with an owner, and another drafts a reply from facts that code looked up. When the project has those files, Issues shows them. It reads them with plain code: no model is asked, nothing is written, and the Most pressing read works as before. When the files are not there, Issues looks and behaves exactly as in the video.
+
+| Issues reads | Default place | What it must hold |
+|---|---|---|
+| The tags file (`tagsFile`) | `<project>/support-tags.jsonl` | one JSON line per ticket: `ticketId`, `owner` (`booking`, `pricing` or `nobody`), `money` (true or false), and when the sorter was not sure `unsure: true` with `why` |
+| The drafts folder (`draftsFolder`) | `<project>/drafts-out/` | `drafts.jsonl`, one JSON line per ticket: `id`, `facts` (what code looked up), `draft` (the reply), `status: "waiting for a person"` |
+
+**Waits for a person** means a person has to decide before anything happens with the ticket. A ticket waits when its tag says it is about money, or when the sorter was unsure. **Unsure** means the sorter's own confidence in the owner, or in whether the ticket is about money, was below the bar the project set; the tag carries its reason and Issues shows it in a few words, for example "unsure (money 0.65)". Issues works out "waits" from `money` and `unsure` itself and ignores a `waitsFor` field written on the line.
+
+What you see:
+
+- **WAITING FOR YOU** is a group at the top of the list: plainly money first, then money the sorter was unsure about, then unsure only. Each of those tickets is listed once, there and not again below.
+- Every sorted ticket has a line with its owner: "Waits for you: money · Owner: Pricing · Draft waiting", or just "Owner: Booking".
+- Select a ticket that has a draft (**↑ / ↓**) and the draft shows under the list: that it is waiting for a person, the guest's question, the facts code looked up, the reply. **Enter** opens the whole draft in place of the list; **↑ / ↓** scroll it; **Enter** or **Esc** closes it. The legend shows **Enter · Draft** whenever the project has a drafts folder, dim when the selected issue has no draft.
+- **Nothing goes out from Issues.** There is no key, menu row or command that sends a draft to a guest. **M** still hands the issue to Main, as before.
+
+![The Issues list with a Waiting for you group of five tickets on top, each with its owner and why it waits, and the selected ticket's draft under the list](docs/screenshots/sorted-waiting.png)
+
+![A draft read in full: waiting for a person, the guest's question, the facts code looked up with the total, and the reply written by Booking](docs/screenshots/draft-in-full.png)
+
+Both pictures are real captures from a second Herdr window on a copy of RentAPlace whose seven new tickets were sorted and drafted by that project's own scripts; a model's wording will differ.
+
+A line that is not in the shape above is **dropped and counted**, never shown: a line that is not JSON, an owner that is not one of the three, a draft whose status is anything other than "waiting for a person", and a reply that states an amount of money its own facts do not hold. A tag or a draft for a ticket that is not open in the inbox is counted and not shown. The first line for a ticket wins. For an agent, or to see the counts:
+
+```sh
+node ~/.config/herdr-app/mods/triage/triage.mjs sorted --root . --pretty          # owners, the waiting group, what was dropped and why
+node ~/.config/herdr-app/mods/triage/triage.mjs draft <ticket id> --root . --pretty   # one draft beside its ticket
+```
+
+| State | Meaning |
+|---|---|
+| `tags.state: none` | no tags file: no owners, no waiting group |
+| `tags.state: empty` | a tags file with no usable line for an open ticket |
+| `tags.ticket_gone` | ids tagged but not open in the inbox |
+| `tags.dropped`, `drafts.dropped` | lines dropped, each with its line number and reason |
+| `drafts.state: none` / `empty` | no drafts folder / no usable draft |
+| `drafts.unknown_ticket` | drafts for tickets that are not in the inbox |
+| `NO_DRAFT` (error of `draft <id>`) | that ticket has no draft that waits for a person |
+
+Limits: Issues cannot tell whether the sorter chose the right owner, or whether the facts are true; it shows what the two scripts wrote. A dropped tag line takes its ticket out of the waiting group (the count of dropped lines is how you notice). A ticket nobody sorted has no owner line.
 
 ### Past conversations: on, and how to turn it off
 
@@ -268,6 +311,8 @@ node ~/.config/herdr-app/mods/triage/triage.mjs config path                  # t
 | `gatherSeconds` | 5 to 120 | `20` | How long one gatherer may take | `TRIAGE_GATHER_SECONDS` |
 | `rulesFile` | path | `issues-rules.md` in the project, else the widget's `rules.md` | The rules sent with every hand-off | `TRIAGE_RULES` |
 | `instruction` | `never-overstate`, `baseline` | `never-overstate` | The instructions for judging | `TRIAGE_INSTRUCTION` |
+| `tagsFile` | a path | `support-tags.jsonl` | The file a project's ticket sorter writes; a relative path starts at the project | `TRIAGE_TAGS_FILE` |
+| `draftsFolder` | a path | `drafts-out` | The folder a project's drafter writes; Issues never sends a draft | `TRIAGE_DRAFTS_FOLDER` |
 | `gatherInstruction` | `baseline`, `evidence-only`, `absence-is-a-question` | `evidence-only` | The instructions for the brief | `TRIAGE_GATHER_INSTRUCTION` |
 
 `node triage.mjs describe` prints the same table for agents.
@@ -378,6 +423,8 @@ npm run check
 Past conversations on by default (2026-11-15): the tests cover the default, each place that can say off (saved, environment, your file, the project's file, a flag), off winning over on, and that nothing unredacted reaches a model call, the cache, a receipt or the prompt. One real run with `claude-haiku-4-5` against a fresh clone of RentAPlace after `npm run seed`, with a scratch state folder and a scratch Pi sessions folder holding one made-up conversation for that project (three messages, one with a made-up password in it): with no setting, the plan started Code, History and Past conversations; the brief had two Past conversations lines, each citing `session:<time>#<entry>`, "read 1 conversation", 15 cited lines in 11 s for $0.018; the made-up password was in no output and no state file. After `config --conversations off` the same gather listed "Past conversations: not started — off", read nothing, and the brief said "Past conversations were not read (off for this project)". Not run: the widget's line and tooltip in a Herdr window.
 
 Moving, popping out and closing (2026-11-15): `frame.js` has 12 tests that run without Herdr (where a drop lands, how the layout is rewritten, what is remembered, one engine). In a second, separate Herdr window on a duplicated layout, through commands, with the layout read back each time: reorder, move to the other side and back, pop out (window open, docked place hidden), dock back, close and reopen with `mod.open`, docked and floating. Not run: a real drag with the pointer, and the Shift keys pressed by hand.
+
+Sorted tickets and drafts (2026-11-17): the tests cover the tag and draft shapes, each named state, dropped and repeated lines, a tag for a ticket that is gone, a draft for an unknown ticket, a reply with an amount its facts do not hold, the list's order, that a project without the two places gets the list it always had, and that no action sends a draft; `npm run check` passed with 100 tests. One real run: seven tickets posted to a copy of RentAPlace, sorted by that project's sorter and drafted by its drafter; `sorted` listed 7 owners, 5 waiting and 6 drafts, and on a copy of those files edited by hand (a made-up owner, a tag and a draft for tickets that never existed, a half-written line, a second line clearing a money ticket, a reply with a changed total, a draft marked sent) every edited line was dropped or counted and none was shown. Seen drawn in a second Herdr window (0.1.16): the waiting group, the owner lines, the draft under the list, Enter opening and closing the draft, scrolling it. Not exercised in the window: the right-click menu, a light theme, the widget popped out, a tags file changing while the widget is open, a window too short for the draft pane.
 
 ## License
 

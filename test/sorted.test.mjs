@@ -195,7 +195,7 @@ test("what a person reads: the row's line, the reason in a few words, the draft'
   assert.equal(sortedLine({ sorted: { owner: "pricing", waits: true, reason: "money" }, draft: {} }), "Waits for you: money · Owner: Pricing · Draft waiting");
   const item = { id: "ticket-0001", sorted: { owner: "pricing", waits: false }, draft: { ...parseDraft(J(draftRow("ticket-0001"))).draft, question: { subject: "Price for Lakeside", message: "How much?", from: "Ana" } } };
   const text = draftViewLines(item, 60).map((l) => l.text).join("\n");
-  for (const want of ["waiting for a person", "Nothing is sent from Issues", "The guest asked (ticket-0001, Ana):", "How much?", "Facts code looked up:", "- total: $468.00", "The reply, written by Booking (if it is wrong, ask Pricing):", "the total is $468.00"]) assert.ok(text.includes(want), want);
+  for (const want of ["waiting for a person", "Nothing is sent from Issues", "The guest asked (Ana):", "How much?", "Facts code looked up:", "- total: $468.00", "The reply, written by Booking (if it is wrong, ask Pricing):", "the total is $468.00"]) assert.ok(text.includes(want), want);
   assert.deepEqual(draftViewLines({ id: "x" }), []);
   assert.deepEqual([draftReason(null), draftReason({ id: "x" }), draftReason(item)], ["Select an issue first", "No draft for this issue", null]);
 });

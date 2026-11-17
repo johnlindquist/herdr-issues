@@ -273,9 +273,9 @@ export function draftViewLines(item, width = 44) {
   const gap = () => out.push({ text: "", tone: "body" });
   add("Draft · waiting for a person", "warn");
   add("Nothing is sent from Issues. A person reads it and sends it.", "dim");
-  if (item.sorted) add(`Owner: ${ownerName(item.sorted.owner)}${item.sorted.waits ? ` · waits for you: ${item.sorted.reason}` : ""}`, "dim");
+  if (item.sorted) add(`Owner: ${ownerName(item.sorted.owner)}${item.sorted.waits ? ` · waits for you: ${shortReason(item.sorted.reason)}` : ""}`, "dim");
   gap();
-  add(`The guest asked (${d.ticket}${d.question?.from ? `, ${d.question.from}` : ""}):`, "head");
+  add(`The guest asked (${d.question?.from ?? d.ticket}):`, "head");
   add(d.question?.subject ?? "", "body");
   add(d.question?.message ?? "", "body");
   gap();

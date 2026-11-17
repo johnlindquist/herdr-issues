@@ -35,6 +35,21 @@ project in the shown space and lets you act on one. Internal ids stay `triage` (
 - **Context brief**: what the small model condenses from what code collected about one issue:
   what is reported, where it likely lives, tests near it, what is not known. Every claim cites a
   report id, a `path:line` the model was shown, or `commit:<sha>`; code drops the rest.
+- **Sorted ticket**: a support ticket that the project's own sorter tagged in the tags file
+  (`tagsFile`, default `support-tags.jsonl`): an **owner** (`booking`, `pricing`, `nobody`), `money`,
+  and `unsure` with `why`. Issues only reads it (`src/sorted.mjs`, plain code, no model).
+- **Waits for a person**: a person must decide before anything happens with the ticket. True when
+  the tag says money or unsure; worked out by code from those two, never from the line's `waitsFor`.
+  Those tickets form the **Waiting for you** group at the top of the list (money, then money the
+  sorter was unsure about, then unsure only) and are not listed again below.
+- **Unsure**: the sorter's confidence in the owner, or in whether the ticket is about money, was
+  under the bar the project set. The reason is the sorter's; `surface.js` `shortReason` shortens it.
+- **Draft**: a reply the project's drafter wrote for one ticket (`draftsFolder`, default
+  `drafts-out/drafts.jsonl`), with the facts code looked up, status "waiting for a person". Shown
+  beside its ticket (under the list on selection; Enter reads it in full). The guest's question
+  comes from the inbox, not from the draft row. Issues has no action that sends a draft.
+- **Dropped**: a tag or draft line that is not the expected shape, or a reply stating an amount its
+  facts do not hold. Counted with its reason in `sorted`, never shown.
 - **Rules**: one file sent with every hand-off: `<project>/issues-rules.md` when the project has
   one, else the widget's `rules.md`. The legend names the file in use.
 
@@ -105,6 +120,7 @@ rules, in that order, nothing else). New Main is Herdr's `space.new {argv, task}
   `main.js` only draws it, and the tests read the same file).
 - What a citation may point at and why a claim is dropped: `src/gather.mjs` (`resolveCite`, `parseBrief`).
 - What Main receives: `src/handoff.mjs` (`assemblePrompt`). The rules text: `rules.md` / the project's `issues-rules.md`.
+- What a sorted ticket, waiting, a kept draft and a dropped line are: `src/sorted.mjs`. What the row, the group and the draft view say: `surface.js` (`sortedLine`, `listSections`, `draftViewLines`).
 - State words (`ready | empty | missing | stale | failed | unavailable`, `busy`): `triage.mjs` `stateOf`.
 - Triage's own files: `src/store.mjs` (`~/.cache/herdr-triage/<app>/projects/<root>/`). It never
   writes into the project, and never creates, edits, closes or comments on an issue.
@@ -139,9 +155,9 @@ One file, `nav.js`, holds the rules; the same file is copied into herdr-todos (`
 ## Interfaces
 
 - Agents: `node triage.mjs describe | show | refresh | gather <id> | prompt <id> | act <id> <action> |
-  rules | explain <id> | config` (`--root <project>`). JSON out; errors `{error:{code,message}}` on
+  rules | explain <id> | config | sorted | draft <ticket id>` (`--root <project>`). JSON out; errors `{error:{code,message}}` on
   stderr, exit 1. Named errors: `GATHER_FAILED`, `NO_MAIN`, `RULES_MISSING`, `NOT_FOUND`,
-  `ACTION_UNAVAILABLE`, `ACTION_FAILED`, `INVALID`.
+  `ACTION_UNAVAILABLE`, `ACTION_FAILED`, `INVALID`, `NO_DRAFT`.
 - People: the sidebar (`main.js`), right-click menu (`menu/`), keys above, plus the action keys
   C, M, N, B (view the brief; B or Esc closes it), O, D. ⇧M / ⇧N appear only after a gather failed.
 - Model seam: `TRIAGE_MODEL_CMD` (JSON argv; gets `{model, system, input}`), used by the tests.
